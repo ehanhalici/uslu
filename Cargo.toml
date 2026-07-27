@@ -1,0 +1,26 @@
+[package]
+name = "uslu"
+version = "0.1.0"
+edition = "2024"
+description = "focus tree ile yapılacaklar yöneticisi"
+
+[lib]
+name = "uslu"
+path = "src/lib.rs"
+
+[[bin]]
+name = "uslu"
+path = "src/main.rs"
+
+[dependencies]
+iced = { version = "0.13", features = ["canvas", "image", "tokio"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tinyfiledialogs = "3.9"
+tokio = { version = "1.0", features = ["rt-multi-thread"] }
+base64 = "0.22"
+image = "0.25"
+
+[profile.release]
+opt-level = 2
