@@ -98,78 +98,73 @@ impl<'a> canvas::Program<CanvasMessage> for CanvasProgram<'a> {
 
         match event {
             // src/canvas.rs -> CanvasProgram::update fonksiyonu içi
-            Event::Mouse(mouse::Event::ButtonPressed(button)) if button == mouse::Button::Left => {
-                let world = self.data.view.screen_to_world(cursor_pos);
 
-                // 1. Shift basılıysa Silme Modu aktif demektir
-                if self.data.is_shift_pressed {
-                    // A) Düğümleri silme kontrolü (Düğümün kendisine veya sağ üstteki X işaretine tıklanırsa)
-                    for node in &self.data.graph.nodes {
-                        let node_rect = Rectangle::new(
-                            Point::new(node.x, node.y),
-                            Size::new(FocusNode::WIDTH, FocusNode::HEIGHT),
-                        );
-                        // İmleç düğüm sınırları içerisindeyse düğümü sil
-                        if node_rect.contains(world) {
-                            return (
-                                iced::event::Status::Captured,
-                                Some(CanvasMessage::DeleteNodeClicked(node.id)),
-                            );
-                        }
-                    }
 
-                    // B) Bağlantıları (Edge) silme kontrolü
-                    for edge in &self.data.graph.edges {
-                        if let (Some(parent), Some(child)) = (
-                            self.data.graph.get_node(edge.parent_id),
-                            self.data.graph.get_node(edge.child_id),
-                        ) {
-                            let mid_world = Point::new(
-                                (parent.x + child.x + FocusNode::WIDTH) / 2.0,
-                                (parent.y + child.y + FocusNode::HEIGHT) / 2.0,
-                            );
-                            let screen_mid = self.data.view.world_to_screen(mid_world);
-                            if (cursor_pos.x - screen_mid.x).hypot(cursor_pos.y - screen_mid.y)
-                                < 14.0
-                            {
-                                return (
-                                    iced::event::Status::Captured,
-                                    Some(CanvasMessage::DeleteEdgeClicked {
-                                        parent_id: edge.parent_id,
-                                        child_id: edge.child_id,
-                                    }),
-                                );
-                            }
-                        }
-                    }
+Event::Mouse(mouse::Event::ButtonPressed(button)) if button == mouse::Button::Left => {
+    let world = self.data.view.screen_to_world(cursor_pos);
 
-                    return (iced::event::Status::Captured, None);
-                }
+    // 1. Shift basılıysa sadece Kırmızı '×' İkonlarına Tıklama Kontrolü Yapılır
+    if self.data.is_shift_pressed {
+        // A) Düğümün sağ üstündeki kırmızı '×' butonuna tıklandı mı?
+        for node in &self.data.graph.nodes {
+            let cross_world = Point::new(node.x + FocusNode::WIDTH - 6.0, node.y + 6.0);
+            let screen_cross = self.data.view.world_to_screen(cross_world);
 
-                // Shift basılı değilse normal Seçme ve Sürükleme mantığı çalışır...
-                if let Some(node) = hit_test_node(self.data.graph, world) {
-                    *state = Interaction::DraggingNode {
-                        id: node.id,
-                        grab_offset: Vector::new(world.x - node.x, world.y - node.y),
-                    };
+            // Tıklama imleci sadece '×' butonunun üzerindeyse (~16px yarıçap) silme yap
+            if (cursor_pos.x - screen_cross.x).hypot(cursor_pos.y - screen_cross.y) < 16.0 {
+                return (
+                    iced::event::Status::Captured,
+                    Some(CanvasMessage::DeleteNodeClicked(node.id)),
+                );
+            }
+        }
+
+        // B) Bağlantıların (Edge) ortasındaki kırmızı '×' butonuna tıklandı mı?
+        for edge in &self.data.graph.edges {
+            if let (Some(parent), Some(child)) = (
+                self.data.graph.get_node(edge.parent_id),
+                self.data.graph.get_node(edge.child_id),
+            ) {
+                let mid_world = Point::new(
+                    (parent.x + child.x + FocusNode::WIDTH) / 2.0,
+                    (parent.y + child.y + FocusNode::HEIGHT) / 2.0,
+                );
+                let screen_mid = self.data.view.world_to_screen(mid_world);
+                if (cursor_pos.x - screen_mid.x).hypot(cursor_pos.y - screen_mid.y) < 14.0 {
                     return (
                         iced::event::Status::Captured,
-                        Some(CanvasMessage::NodeClicked {
-                            id: node.id,
-                            shift: false,
+                        Some(CanvasMessage::DeleteEdgeClicked {
+                            parent_id: edge.parent_id,
+                            child_id: edge.child_id,
                         }),
                     );
                 }
-
-                *state = Interaction::Panning {
-                    start: cursor_pos,
-                    original_pan: Vector::new(self.data.view.pan_x, self.data.view.pan_y),
-                };
-                (
-                    iced::event::Status::Captured,
-                    Some(CanvasMessage::BackgroundClicked),
-                )
             }
+        }
+    }
+
+    // 2. Kırmızı '×' ikonlarına tıklanmadıysa (Gövdeye tıklandıysa):
+    if let Some(node) = hit_test_node(self.data.graph, world) {
+        *state = Interaction::DraggingNode {
+            id: node.id,
+            grab_offset: Vector::new(world.x - node.x, world.y - node.y),
+        };
+        return (
+            iced::event::Status::Captured,
+            Some(CanvasMessage::NodeClicked {
+                id: node.id,
+                shift: self.data.is_shift_pressed, // Shift ile 2 düğümü birbirine bağlar
+            }),
+        );
+    }
+
+    // 3. Boş alana tıklandıysa tuvali kaydır (Pan)
+    *state = Interaction::Panning {
+        start: cursor_pos,
+        original_pan: Vector::new(self.data.view.pan_x, self.data.view.pan_y),
+    };
+    (iced::event::Status::Captured, Some(CanvasMessage::BackgroundClicked))
+}
             Event::Mouse(mouse::Event::ButtonReleased(button)) if button == mouse::Button::Left => {
                 *state = Interaction::Idle;
                 (iced::event::Status::Captured, None)
