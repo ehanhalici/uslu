@@ -14,6 +14,7 @@ pub enum TabType {
     General,
     Description,
     ProgressNotes,
+    Info,
 }
 
 impl TabType {
@@ -22,6 +23,7 @@ impl TabType {
             Self::General => "⚙ Genel",
             Self::Description => "📝 Açıklama",
             Self::ProgressNotes => "📌 İlerleme Notları",
+            Self::Info => "📊 Bilgi & Seviye",
         }
     }
 }
@@ -39,6 +41,9 @@ pub enum SidebarMessage {
     CropPanMoved { delta_x: f32, delta_y: f32 },
     ApplyCropAndSave,
     CancelCrop,
+
+    ToggleEditing,
+    MaxLevelSliderChanged(usize),
 
     ToggleTab(TabType),
     AddNode,
@@ -118,8 +123,10 @@ pub fn sidebar_view<'a>(
     edge_count: usize,
     open_tabs: &'a [TabType],
     cropper_state: Option<&'a ImageCropperState>,
+    is_editing_enabled: bool,
+    level_counts: &std::collections::HashMap<usize, usize>,
+    max_visible_level: usize,
 ) -> Element<'a, SidebarMessage> {
-    // Sadece Siyah Ekran Kırpma Arayüzü
     if let Some(cropper) = cropper_state {
         let cropper_canvas = canvas::Canvas::new(CropperProgram { state: cropper })
             .width(240)
@@ -176,12 +183,14 @@ pub fn sidebar_view<'a>(
         TabType::General,
         TabType::Description,
         TabType::ProgressNotes,
+        TabType::Info,
     ] {
         let is_open = open_tabs.contains(tab);
         let label = match tab {
             TabType::General => "⚙",
             TabType::Description => "📝",
             TabType::ProgressNotes => "📌",
+            TabType::Info => "📊",
         };
 
         top_strip = top_strip.push(
@@ -251,41 +260,51 @@ pub fn sidebar_view<'a>(
         tab_card = tab_card.push(header);
 
         match tab {
-            // src/sidebar.rs -> sidebar_view fonksiyonu içi TabType::General bloğu
             TabType::General => {
                 let mut gen_box = column![].spacing(10);
 
-                gen_box = gen_box.push(
-                    column![
-                        text("Başlık")
-                            .size(11)
-                            .color(Color::from_rgb8(0x90, 0x90, 0x99)),
-                        text_input("Başlık...", &form.title)
-                            .on_input(SidebarMessage::TitleChanged)
-                            .padding(6),
-                    ]
-                    .spacing(2),
-                );
+                // 1. İSTER: Mutlak Düzenle Butonu (Kilit mekanizması)
+                if selected_node.is_some() {
+                    let lock_btn_label = if is_editing_enabled {
+                        "🔒 Düzenlemeyi Kilitle"
+                    } else {
+                        "✏️ Metin/Resim Düzenle"
+                    };
+                    gen_box = gen_box.push(
+                        button(text(lock_btn_label).size(12))
+                            .on_press(SidebarMessage::ToggleEditing)
+                            .padding(8),
+                    );
+                }
 
-                gen_box = gen_box.push(
-                    column![
-                        text("Resim Seç")
-                            .size(11)
-                            .color(Color::from_rgb8(0x90, 0x90, 0x99)),
-                        button(
-                            text(if form.image_id.is_some() {
-                                "Resmi Değiştir..."
-                            } else {
-                                "Görsel Dosyası Seç..."
-                            })
-                            .size(11)
-                        )
-                        .on_press(SidebarMessage::OpenImagePicker)
-                        .padding(6),
-                    ]
-                    .spacing(2),
-                );
+                // Sadece 'İlerleme' slider'ı HER ZAMAN aktif. Başlık, Resim, Açıklama ancak Düzenle tıklandıysa aktif!
+                if is_editing_enabled || selected_node.is_none() {
+                    gen_box = gen_box.push(
+                        column![
+                            text("Başlık")
+                                .size(11)
+                                .color(Color::from_rgb8(0x90, 0x90, 0x99)),
+                            text_input("Başlık...", &form.title)
+                                .on_input(SidebarMessage::TitleChanged)
+                                .padding(6),
+                        ]
+                        .spacing(2),
+                    );
 
+                    gen_box = gen_box.push(
+                        column![
+                            text("Resim Seç")
+                                .size(11)
+                                .color(Color::from_rgb8(0x90, 0x90, 0x99)),
+                            button(text("Görsel Değiştir...").size(11))
+                                .on_press(SidebarMessage::OpenImagePicker)
+                                .padding(6),
+                        ]
+                        .spacing(2),
+                    );
+                }
+
+                // İlerleme Slider'ı (Her zaman değişebilir)
                 gen_box = gen_box.push(
                     column![
                         row![
@@ -303,7 +322,6 @@ pub fn sidebar_view<'a>(
                     .spacing(2),
                 );
 
-                // Sadece Seçili Düğüm Olmadığında "Yeni Düğüm Ekle" Butonunu Göster
                 if selected_node.is_none() {
                     gen_box = gen_box.push(
                         button(text("Yeni Düğüm Ekle").size(12))
@@ -354,6 +372,57 @@ pub fn sidebar_view<'a>(
                     });
 
                 tab_card = tab_card.push(editor_container);
+            }
+            TabType::Info => {
+                let mut info_box = column![].spacing(12);
+
+                info_box = info_box.push(
+                    text(format!("Toplam Düğüm: {}", node_count))
+                        .size(13)
+                        .color(Color::WHITE),
+                );
+                info_box = info_box.push(
+                    text(format!("Toplam Bağlantı: {}", edge_count))
+                        .size(12)
+                        .color(Color::from_rgb8(0x88, 0x88, 0x90)),
+                );
+
+                let total_levels = level_counts.keys().max().map(|m| m + 1).unwrap_or(0);
+                info_box = info_box.push(
+                    text(format!("Toplam Seviye Sayısı: {}", total_levels))
+                        .size(12)
+                        .color(Color::from_rgb8(0xd4, 0xaf, 0x37)),
+                );
+
+                // Seviye Detay Listesi
+                let mut lvl_list = column![].spacing(4);
+                for lvl in 0..total_levels {
+                    let count = level_counts.get(&lvl).copied().unwrap_or(0);
+                    lvl_list = lvl_list.push(
+                        text(format!(" • Seviye {}: {} düğüm", lvl + 1, count))
+                            .size(11)
+                            .color(if lvl < max_visible_level {
+                                Color::from_rgb8(0x7a, 0xc8, 0x7a)
+                            } else {
+                                Color::from_rgb8(0x88, 0x88, 0x90)
+                            }),
+                    );
+                }
+                info_box = info_box.push(lvl_list);
+
+                // Seviye Görünürlük Slider'ı
+                if total_levels > 0 {
+                    info_box = info_box.push(column![
+                    text(format!("Açık Seviye Sınırı: Seviye 1 - {}", max_visible_level))
+                        .size(11)
+                        .color(Color::from_rgb8(0xd4, 0xaf, 0x37)),
+                    slider(1.0..=(total_levels as f32), max_visible_level as f32, |val| SidebarMessage::MaxLevelSliderChanged(val as usize)).step(1.0),
+                    text("Not: Slider ile toplu açıp kapatabilirsiniz, ardından tuvalde Ctrl+Tık ile esnek müdahale edebilirsiniz.")
+                        .size(9).color(Color::from_rgb8(0x66, 0x66, 0x70))
+                ].spacing(6));
+                }
+
+                tab_card = tab_card.push(info_box);
             }
         }
 

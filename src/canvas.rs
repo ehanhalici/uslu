@@ -13,6 +13,7 @@ pub struct CanvasData<'a> {
     pub view: Viewport,
     pub selected: Option<Uuid>,
     pub is_shift_pressed: bool,
+    pub is_ctrl_pressed: bool,
     pub loaded_images: &'a HashMap<String, String>, // Base64 Önbelleği
 }
 
@@ -62,7 +63,7 @@ pub enum Interaction {
 
 #[derive(Debug, Clone)]
 pub enum CanvasMessage {
-    NodeClicked { id: Uuid, shift: bool },
+    NodeClicked { id: Uuid, shift: bool, ctrl: bool },
     NodeMoved { id: Uuid, x: f32, y: f32 },
     DeleteNodeClicked(Uuid),
     DeleteEdgeClicked { parent_id: Uuid, child_id: Uuid },
@@ -98,73 +99,93 @@ impl<'a> canvas::Program<CanvasMessage> for CanvasProgram<'a> {
 
         match event {
             // src/canvas.rs -> CanvasProgram::update fonksiyonu içi
+            // src/canvas.rs -> CanvasProgram::update içindeki MousePressed bloğu:
+            Event::Mouse(mouse::Event::ButtonPressed(button)) if button == mouse::Button::Left => {
+                let world = self.data.view.screen_to_world(cursor_pos);
 
-
-Event::Mouse(mouse::Event::ButtonPressed(button)) if button == mouse::Button::Left => {
-    let world = self.data.view.screen_to_world(cursor_pos);
-
-    // 1. Shift basılıysa sadece Kırmızı '×' İkonlarına Tıklama Kontrolü Yapılır
-    if self.data.is_shift_pressed {
-        // A) Düğümün sağ üstündeki kırmızı '×' butonuna tıklandı mı?
-        for node in &self.data.graph.nodes {
-            let cross_world = Point::new(node.x + FocusNode::WIDTH - 6.0, node.y + 6.0);
-            let screen_cross = self.data.view.world_to_screen(cross_world);
-
-            // Tıklama imleci sadece '×' butonunun üzerindeyse (~16px yarıçap) silme yap
-            if (cursor_pos.x - screen_cross.x).hypot(cursor_pos.y - screen_cross.y) < 16.0 {
-                return (
-                    iced::event::Status::Captured,
-                    Some(CanvasMessage::DeleteNodeClicked(node.id)),
-                );
-            }
-        }
-
-        // B) Bağlantıların (Edge) ortasındaki kırmızı '×' butonuna tıklandı mı?
-        for edge in &self.data.graph.edges {
-            if let (Some(parent), Some(child)) = (
-                self.data.graph.get_node(edge.parent_id),
-                self.data.graph.get_node(edge.child_id),
-            ) {
-                let mid_world = Point::new(
-                    (parent.x + child.x + FocusNode::WIDTH) / 2.0,
-                    (parent.y + child.y + FocusNode::HEIGHT) / 2.0,
-                );
-                let screen_mid = self.data.view.world_to_screen(mid_world);
-                if (cursor_pos.x - screen_mid.x).hypot(cursor_pos.y - screen_mid.y) < 14.0 {
-                    return (
-                        iced::event::Status::Captured,
-                        Some(CanvasMessage::DeleteEdgeClicked {
-                            parent_id: edge.parent_id,
-                            child_id: edge.child_id,
-                        }),
-                    );
+                // 1. Shift basılıysa Silme Kontrolleri (Aynı kalıyor)
+                if self.data.is_shift_pressed {
+                    for node in &self.data.graph.nodes {
+                        if !self.data.graph.is_node_visible(node.id) {
+                            continue;
+                        }
+                        let cross_world = Point::new(node.x + FocusNode::WIDTH - 6.0, node.y + 6.0);
+                        let screen_cross = self.data.view.world_to_screen(cross_world);
+                        if (cursor_pos.x - screen_cross.x).hypot(cursor_pos.y - screen_cross.y)
+                            < 16.0
+                        {
+                            return (
+                                iced::event::Status::Captured,
+                                Some(CanvasMessage::DeleteNodeClicked(node.id)),
+                            );
+                        }
+                    }
+                    for edge in &self.data.graph.edges {
+                        if let (Some(parent), Some(child)) = (
+                            self.data.graph.get_node(edge.parent_id),
+                            self.data.graph.get_node(edge.child_id),
+                        ) {
+                            let mid_world = Point::new(
+                                (parent.x + child.x + FocusNode::WIDTH) / 2.0,
+                                (parent.y + child.y + FocusNode::HEIGHT) / 2.0,
+                            );
+                            let screen_mid = self.data.view.world_to_screen(mid_world);
+                            if (cursor_pos.x - screen_mid.x).hypot(cursor_pos.y - screen_mid.y)
+                                < 14.0
+                            {
+                                return (
+                                    iced::event::Status::Captured,
+                                    Some(CanvasMessage::DeleteEdgeClicked {
+                                        parent_id: edge.parent_id,
+                                        child_id: edge.child_id,
+                                    }),
+                                );
+                            }
+                        }
+                    }
                 }
+
+                // 2. Düğüm Gövdesine Tıklama Kontrolü
+                if let Some(node) = hit_test_node(self.data.graph, world) {
+                    if self.data.graph.is_node_visible(node.id) {
+                        // DÜZELTME: CTRL BASILIYSA Sürükleme state'ine geçme!
+                        // Doğrudan olayı yakala ve mesaj fırlat.
+                        if self.data.is_ctrl_pressed {
+                            return (
+                                iced::event::Status::Captured,
+                                Some(CanvasMessage::NodeClicked {
+                                    id: node.id,
+                                    shift: false,
+                                    ctrl: true,
+                                }),
+                            );
+                        }
+
+                        *state = Interaction::DraggingNode {
+                            id: node.id,
+                            grab_offset: Vector::new(world.x - node.x, world.y - node.y),
+                        };
+                        return (
+                            iced::event::Status::Captured,
+                            Some(CanvasMessage::NodeClicked {
+                                id: node.id,
+                                shift: self.data.is_shift_pressed,
+                                ctrl: false,
+                            }),
+                        );
+                    }
+                }
+
+                // 3. Boş Alana Tıklama
+                *state = Interaction::Panning {
+                    start: cursor_pos,
+                    original_pan: Vector::new(self.data.view.pan_x, self.data.view.pan_y),
+                };
+                (
+                    iced::event::Status::Captured,
+                    Some(CanvasMessage::BackgroundClicked),
+                )
             }
-        }
-    }
-
-    // 2. Kırmızı '×' ikonlarına tıklanmadıysa (Gövdeye tıklandıysa):
-    if let Some(node) = hit_test_node(self.data.graph, world) {
-        *state = Interaction::DraggingNode {
-            id: node.id,
-            grab_offset: Vector::new(world.x - node.x, world.y - node.y),
-        };
-        return (
-            iced::event::Status::Captured,
-            Some(CanvasMessage::NodeClicked {
-                id: node.id,
-                shift: self.data.is_shift_pressed, // Shift ile 2 düğümü birbirine bağlar
-            }),
-        );
-    }
-
-    // 3. Boş alana tıklandıysa tuvali kaydır (Pan)
-    *state = Interaction::Panning {
-        start: cursor_pos,
-        original_pan: Vector::new(self.data.view.pan_x, self.data.view.pan_y),
-    };
-    (iced::event::Status::Captured, Some(CanvasMessage::BackgroundClicked))
-}
             Event::Mouse(mouse::Event::ButtonReleased(button)) if button == mouse::Button::Left => {
                 *state = Interaction::Idle;
                 (iced::event::Status::Captured, None)
@@ -243,32 +264,37 @@ Event::Mouse(mouse::Event::ButtonPressed(button)) if button == mouse::Button::Le
         draw_grid(&mut frame, &self.data.view, bounds);
 
         for edge in &self.data.graph.edges {
-            if let (Some(parent), Some(child)) = (
-                self.data.graph.get_node(edge.parent_id),
-                self.data.graph.get_node(edge.child_id),
-            ) {
-                draw_edge(
+            if self.data.graph.is_node_visible(edge.parent_id)
+                && self.data.graph.is_node_visible(edge.child_id)
+            {
+                if let (Some(parent), Some(child)) = (
+                    self.data.graph.get_node(edge.parent_id),
+                    self.data.graph.get_node(edge.child_id),
+                ) {
+                    draw_edge(
+                        &mut frame,
+                        &self.data.view,
+                        parent,
+                        child,
+                        self.data.is_shift_pressed,
+                    );
+                }
+            }
+        }
+        for node in &self.data.graph.nodes {
+            if self.data.graph.is_node_visible(node.id) {
+                let is_selected = self.data.selected == Some(node.id);
+                draw_node(
                     &mut frame,
                     &self.data.view,
-                    parent,
-                    child,
+                    node,
+                    is_selected,
                     self.data.is_shift_pressed,
+                    self.data.is_ctrl_pressed,
+                    self.data.loaded_images,
                 );
             }
         }
-
-        for node in &self.data.graph.nodes {
-            let is_selected = self.data.selected == Some(node.id);
-            draw_node(
-                &mut frame,
-                &self.data.view,
-                node,
-                is_selected,
-                self.data.is_shift_pressed,
-                self.data.loaded_images,
-            );
-        }
-
         vec![frame.into_geometry()]
     }
 
@@ -331,6 +357,7 @@ fn draw_node(
     node: &FocusNode,
     is_selected: bool,
     is_shift: bool,
+    is_control: bool,
     loaded_images: &HashMap<String, String>,
 ) {
     let screen = view.world_to_screen(Point::new(node.x, node.y));
@@ -472,11 +499,45 @@ fn draw_node(
             ..Default::default()
         });
     }
+
+    // CTRL BASILIYSA: Windows Pencere Butonu Tarzı '+' veya '-' İkonu Çiz
+    if is_control {
+        let icon_center = Point::new(screen.x + w - 10.0, screen.y + 10.0);
+        let btn_color = if node.is_collapsed {
+            Color::from_rgb8(0x2e, 0x8b, 0x57) // Yeşil (Daraltılmış - Açılabilir)
+        } else {
+            Color::from_rgb8(0x46, 0x82, 0xb4) // Mavi (Açık - Daraltılabilir)
+        };
+
+        // Arka plan kutusu
+        frame.fill_rectangle(
+            Point::new(icon_center.x - 9.0, icon_center.y - 9.0),
+            Size::new(18.0, 18.0),
+            btn_color,
+        );
+
+        let symbol = if node.is_collapsed { "+" } else { "−" };
+        frame.fill_text(canvas::Text {
+            content: symbol.to_string(),
+            position: icon_center,
+            color: Color::WHITE,
+            size: iced::Pixels(14.0),
+            horizontal_alignment: iced::alignment::Horizontal::Center,
+            vertical_alignment: iced::alignment::Vertical::Center,
+            ..Default::default()
+        });
+    }
 }
 
 // src/canvas.rs içindeki draw_edge fonksiyonu:
 
-fn draw_edge(frame: &mut Frame, view: &Viewport, parent: &FocusNode, child: &FocusNode, is_shift: bool) {
+fn draw_edge(
+    frame: &mut Frame,
+    view: &Viewport,
+    parent: &FocusNode,
+    child: &FocusNode,
+    is_shift: bool,
+) {
     // 1. Düğümlerin giriş/çıkış noktalarını çakışmayacak şekilde hesapla
     let parent_center_x = parent.x + FocusNode::WIDTH / 2.0;
     let child_center_x = child.x + FocusNode::WIDTH / 2.0;
@@ -488,10 +549,10 @@ fn draw_edge(frame: &mut Frame, view: &Viewport, parent: &FocusNode, child: &Foc
     let end = view.world_to_screen(end_world);
 
     let gold = Color::from_rgb8(0xd4, 0xaf, 0x37);
-    let stroke = canvas::Stroke { 
-        style: canvas::Style::Solid(gold), 
-        width: 1.8 * view.zoom, 
-        ..Default::default() 
+    let stroke = canvas::Stroke {
+        style: canvas::Style::Solid(gold),
+        width: 1.8 * view.zoom,
+        ..Default::default()
     };
 
     let mid_screen = Point::new((start.x + end.x) / 2.0, (start.y + end.y) / 2.0);
@@ -507,12 +568,15 @@ fn draw_edge(frame: &mut Frame, view: &Viewport, parent: &FocusNode, child: &Foc
         let mid1 = Point::new(start.x, mid_y);
         let mid2 = Point::new(end.x, mid_y);
 
-        frame.stroke(&Path::new(|b| {
-            b.move_to(start);
-            b.line_to(mid1);
-            b.line_to(mid2);
-            b.line_to(end);
-        }), stroke);
+        frame.stroke(
+            &Path::new(|b| {
+                b.move_to(start);
+                b.line_to(mid1);
+                b.line_to(mid2);
+                b.line_to(end);
+            }),
+            stroke,
+        );
     }
 
     draw_arrowhead(frame, end);
@@ -520,9 +584,9 @@ fn draw_edge(frame: &mut Frame, view: &Viewport, parent: &FocusNode, child: &Foc
     // Shift basılıyken silme çarpısı
     if is_shift {
         frame.fill_rectangle(
-            Point::new(mid_screen.x - 7.0, mid_screen.y - 7.0), 
-            Size::new(14.0, 14.0), 
-            Color::from_rgb8(0xd9, 0x38, 0x38)
+            Point::new(mid_screen.x - 7.0, mid_screen.y - 7.0),
+            Size::new(14.0, 14.0),
+            Color::from_rgb8(0xd9, 0x38, 0x38),
         );
         frame.fill_text(canvas::Text {
             content: "×".to_string(),

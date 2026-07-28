@@ -13,16 +13,19 @@ impl Default for NodeStatus {
     }
 }
 
+// src/models.rs içine eklenecek/güncellenecek kısımlar:
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FocusNode {
     pub id: Uuid,
     pub title: String,
     pub description: String,
     pub progress_notes: String,
-    pub image_id: Option<Uuid>, // Artık harici yol değil, images.md içindeki UUID tutulur
+    pub image_id: Option<Uuid>,
     pub status: NodeStatus,
     pub x: f32,
     pub y: f32,
+    pub is_collapsed: bool, // YENİ: Bu düğümün alt çocukları gizlendi mi?
 }
 
 impl FocusNode {
@@ -39,6 +42,7 @@ impl FocusNode {
             status: NodeStatus::default(),
             x: 0.0,
             y: 0.0,
+            is_collapsed: false,
         }
     }
 }
@@ -135,5 +139,55 @@ impl FocusGraph {
             .filter(|e| e.child_id == id)
             .map(|e| e.parent_id)
             .collect()
+    }
+
+    pub fn is_node_visible(&self, id: Uuid) -> bool {
+        let parents = self.parents_of(id);
+        if parents.is_empty() {
+            return true;
+        }
+
+        // Bir child birden fazla parent'a sahipse:
+        // TÜM ebeveynleri 'is_collapsed = true' yapmışsa kapalıdır, en az biri açıksa görünür.
+        let all_parents_collapsed = parents
+            .iter()
+            .filter_map(|&p_id| self.get_node(p_id))
+            .all(|p| p.is_collapsed);
+
+        if all_parents_collapsed {
+            return false;
+        }
+
+        // Üst ebeveynlerin de görünürlüğünü rekürsif kontrol et
+        parents.iter().any(|&p_id| self.is_node_visible(p_id))
+    }
+
+    /// Düğümlerin topolojik katman/seviye (0-indexed) haritasını döner.
+    pub fn get_node_levels(&self) -> std::collections::HashMap<Uuid, usize> {
+        let mut levels = std::collections::HashMap::new();
+        for _ in 0..self.nodes.len() {
+            let mut changed = false;
+            for node in &self.nodes {
+                let parents = self.parents_of(node.id);
+                let new_lvl = if parents.is_empty() {
+                    0
+                } else {
+                    parents
+                        .iter()
+                        .map(|p| levels.get(p).copied().unwrap_or(0))
+                        .max()
+                        .unwrap_or(0)
+                        + 1
+                };
+                if levels.get(&node.id).copied() != Some(new_lvl) {
+                    levels.insert(node.id, new_lvl);
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+        levels
     }
 }

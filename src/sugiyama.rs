@@ -120,8 +120,8 @@ impl SugiyamaEngine {
     ///     ONUNLA BİRLİKTE kayar — asla ebeveynlerinden kopup sola/sağa
     ///     yaslanmış görünmezler.
     fn assign_coordinates(graph: &mut FocusGraph, ordered: &[Vec<Uuid>], frozen: &HashSet<Uuid>) {
-        const X_GAP: f32 = 60.0;        // Doğrudan kardeş düğümler arası boşluk
-        const GROUP_GAP: f32 = 180.0;   // Birbiriyle hiç bağlantısı olmayan kökler arası boşluk
+        const X_GAP: f32 = 60.0; // Doğrudan kardeş düğümler arası boşluk
+        const GROUP_GAP: f32 = 180.0; // Birbiriyle hiç bağlantısı olmayan kökler arası boşluk
         const Y_GAP: f32 = 120.0;
 
         // 1. Y Koordinatları Ataması
@@ -262,7 +262,14 @@ impl SugiyamaEngine {
         let mut cursor = -total_width / 2.0;
         for &root in &top_level_roots {
             let root_w = subtree_width(root, &children_of_primary, &mut memo, X_GAP);
-            place(root, cursor, &children_of_primary, &mut memo, &mut positions, X_GAP);
+            place(
+                root,
+                cursor,
+                &children_of_primary,
+                &mut memo,
+                &mut positions,
+                X_GAP,
+            );
             cursor += root_w + GROUP_GAP;
         }
 
@@ -286,7 +293,14 @@ impl SugiyamaEngine {
 
         for id in independent_by_layer {
             let mut local_positions: HashMap<Uuid, f32> = HashMap::new();
-            place(id, 0.0, &children_of_primary, &mut memo, &mut local_positions, X_GAP);
+            place(
+                id,
+                0.0,
+                &children_of_primary,
+                &mut memo,
+                &mut local_positions,
+                X_GAP,
+            );
             let local_root_x = *local_positions.get(&id).unwrap_or(&0.0);
 
             let parent_xs: Vec<f32> = graph
