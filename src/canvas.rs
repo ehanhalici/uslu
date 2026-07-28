@@ -433,21 +433,14 @@ fn draw_node(
         },
     );
 
-    if view.zoom > 0.35 {
-        let title_size = (10.5 * view.zoom).max(7.0);
-        frame.fill_text(canvas::Text {
-            content: truncate_text(&node.title, banner_w - 8.0),
-            position: Point::new(
-                banner_pos.x + banner_w / 2.0,
-                banner_pos.y + (banner_h - title_size) / 2.0 - 1.0 * view.zoom,
-            ),
-            color: Color::from_rgb8(0xf0, 0xe6, 0xd2),
-            size: iced::Pixels(title_size),
-            horizontal_alignment: iced::alignment::Horizontal::Center,
-            vertical_alignment: iced::alignment::Vertical::Top,
-            ..Default::default()
-        });
-    }
+    draw_node_title(
+        frame,
+        &node.title,
+        banner_pos,
+        banner_w,
+        banner_h,
+        view.zoom,
+    );
 
     let bar_h = 5.0 * view.zoom;
     let bar_y = banner_pos.y + banner_h + 4.0 * view.zoom;
@@ -623,13 +616,142 @@ fn interpolate_color(c1: Color, c2: Color, t: f32) -> Color {
     )
 }
 
-fn truncate_text(s: &str, max_w: f32) -> String {
-    let max_chars = ((max_w / 6.5) as usize).max(3);
-    if s.chars().count() <= max_chars {
-        s.to_string()
-    } else {
-        let mut t: String = s.chars().take(max_chars - 1).collect();
-        t.push('…');
-        t
+const MIN_FONT_SIZE: f32 = 3.0;
+const MAX_TITLE_LINES: usize = 2;
+const CHAR_WIDTH_RATIO: f32 = 0.58;
+const BASE_FONT_SIZE_SCALE: f32 = 10.5;
+const BANNER_PADDING: f32 = 8.0;
+const ELLIPSIS_CHAR: char = '…';
+
+fn draw_node_title(
+    frame: &mut Frame,
+    title: &str,
+    banner_pos: Point,
+    banner_w: f32,
+    banner_h: f32,
+    zoom: f32,
+) {
+    let min_visible_zoom = 0.15;
+    if zoom <= min_visible_zoom {
+        return;
     }
+
+    let available_width = banner_w - BANNER_PADDING;
+    let base_font_size = BASE_FONT_SIZE_SCALE * zoom;
+
+    let (font_size, content) = calculate_title_layout(title, available_width, base_font_size);
+    let center_position = calculate_title_center_position(banner_pos, banner_w, banner_h);
+
+    frame.fill_text(canvas::Text {
+        content,
+        position: center_position,
+        color: Color::from_rgb8(0xf0, 0xe6, 0xd2),
+        size: iced::Pixels(font_size),
+        horizontal_alignment: iced::alignment::Horizontal::Center,
+        vertical_alignment: iced::alignment::Vertical::Center,
+        ..Default::default()
+    });
+}
+
+fn calculate_title_layout(title: &str, available_width: f32, base_font_size: f32) -> (f32, String) {
+    let total_characters = title.chars().count();
+    if total_characters == 0 {
+        return (base_font_size.max(MIN_FONT_SIZE), String::new());
+    }
+
+    let max_chars_single_line = calculate_max_characters_per_line(available_width, base_font_size);
+    if total_characters <= max_chars_single_line {
+        return (base_font_size, title.to_string());
+    }
+
+    let base_wrapped = format_title_into_lines(title, available_width, base_font_size);
+    if !base_wrapped.contains(ELLIPSIS_CHAR) {
+        return (base_font_size, base_wrapped);
+    }
+
+    let total_available_width = available_width * (MAX_TITLE_LINES as f32);
+    let required_font_size = total_available_width / (total_characters as f32 * CHAR_WIDTH_RATIO);
+    let font_size = base_font_size.min(required_font_size).max(MIN_FONT_SIZE);
+    let content = format_title_into_lines(title, available_width, font_size);
+
+    (font_size, content)
+}
+
+fn calculate_max_characters_per_line(available_width: f32, font_size: f32) -> usize {
+    let character_width = font_size * CHAR_WIDTH_RATIO;
+    let min_characters = 3;
+    ((available_width / character_width) as usize).max(min_characters)
+}
+
+fn format_title_into_lines(title: &str, available_width: f32, font_size: f32) -> String {
+    let max_chars = calculate_max_characters_per_line(available_width, font_size);
+    if title.chars().count() <= max_chars {
+        return title.to_string();
+    }
+
+    let words: Vec<&str> = title.split_whitespace().collect();
+    if words.len() > 1 {
+        if let Some(wrapped) = wrap_words_into_two_lines(&words, max_chars) {
+            return wrapped;
+        }
+    }
+
+    split_characters_into_two_lines(title, max_chars)
+}
+
+fn wrap_words_into_two_lines(words: &[&str], max_chars_per_line: usize) -> Option<String> {
+    let mut first_line = String::new();
+    let mut split_index = 0;
+
+    for (index, word) in words.iter().enumerate() {
+        let proposed_length = if first_line.is_empty() {
+            word.chars().count()
+        } else {
+            first_line.chars().count() + 1 + word.chars().count()
+        };
+
+        if proposed_length <= max_chars_per_line {
+            if !first_line.is_empty() {
+                first_line.push(' ');
+            }
+            first_line.push_str(word);
+            split_index = index + 1;
+        } else {
+            break;
+        }
+    }
+
+    if split_index > 0 && split_index < words.len() {
+        let second_line_raw = words[split_index..].join(" ");
+        let second_line = truncate_text_line(&second_line_raw, max_chars_per_line);
+        Some(format!("{}\n{}", first_line, second_line))
+    } else {
+        None
+    }
+}
+
+fn split_characters_into_two_lines(title: &str, max_chars_per_line: usize) -> String {
+    let first_line: String = title.chars().take(max_chars_per_line).collect();
+    let second_line_raw: String = title.chars().skip(max_chars_per_line).collect();
+    let second_line = truncate_text_line(&second_line_raw, max_chars_per_line);
+    format!("{}\n{}", first_line, second_line)
+}
+
+fn truncate_text_line(text: &str, max_characters: usize) -> String {
+    if text.chars().count() <= max_characters {
+        text.to_string()
+    } else if max_characters <= 1 {
+        text.chars().take(1).collect()
+    } else {
+        let mut truncated: String = text.chars().take(max_characters - 1).collect();
+        truncated.push(ELLIPSIS_CHAR);
+        truncated
+    }
+}
+
+fn calculate_title_center_position(banner_pos: Point, banner_width: f32, banner_height: f32) -> Point {
+    Point::new(
+        banner_pos.x + banner_width / 2.0,
+        banner_pos.y + banner_height / 2.0,
+    )
 }

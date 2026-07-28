@@ -29,7 +29,7 @@ pub struct FocusNode {
 }
 
 impl FocusNode {
-    pub const WIDTH: f32 = 130.0;
+    pub const WIDTH: f32 = 180.0;
     pub const HEIGHT: f32 = 160.0;
 
     pub fn new(title: String, description: String) -> Self {
