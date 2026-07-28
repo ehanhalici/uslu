@@ -474,55 +474,55 @@ fn draw_node(
     }
 }
 
-fn draw_edge(
-    frame: &mut Frame,
-    view: &Viewport,
-    parent: &FocusNode,
-    child: &FocusNode,
-    is_shift: bool,
-) {
-    let start_world = Point::new(
-        parent.x + FocusNode::WIDTH / 2.0,
-        parent.y + FocusNode::HEIGHT,
-    );
-    let end_world = Point::new(child.x + FocusNode::WIDTH / 2.0, child.y);
+// src/canvas.rs içindeki draw_edge fonksiyonu:
+
+fn draw_edge(frame: &mut Frame, view: &Viewport, parent: &FocusNode, child: &FocusNode, is_shift: bool) {
+    // 1. Düğümlerin giriş/çıkış noktalarını çakışmayacak şekilde hesapla
+    let parent_center_x = parent.x + FocusNode::WIDTH / 2.0;
+    let child_center_x = child.x + FocusNode::WIDTH / 2.0;
+
+    let start_world = Point::new(parent_center_x, parent.y + FocusNode::HEIGHT);
+    let end_world = Point::new(child_center_x, child.y);
 
     let start = view.world_to_screen(start_world);
     let end = view.world_to_screen(end_world);
 
     let gold = Color::from_rgb8(0xd4, 0xaf, 0x37);
-    let stroke = canvas::Stroke {
-        style: canvas::Style::Solid(gold),
-        width: 2.0,
-        ..Default::default()
+    let stroke = canvas::Stroke { 
+        style: canvas::Style::Solid(gold), 
+        width: 1.8 * view.zoom, 
+        ..Default::default() 
     };
 
     let mid_screen = Point::new((start.x + end.x) / 2.0, (start.y + end.y) / 2.0);
 
-    if (start.x - end.x).abs() < 1.0 {
+    // 2. Çoklu oyların üst üste binmesini önlemek için X mesafesine göre kademeli dirsek (Orthogonal Offset)
+    let mid_y = (start.y + end.y) / 2.0;
+
+    // Eğer dikeyde aynı hizadalarsa düz çiz
+    if (start.x - end.x).abs() < 2.0 {
         frame.stroke(&Path::line(start, end), stroke);
     } else {
-        let mid_y = (start.y + end.y) / 2.0;
+        // Çatallanan okları ayrıştıran yumuşak Z çimimi
         let mid1 = Point::new(start.x, mid_y);
         let mid2 = Point::new(end.x, mid_y);
-        frame.stroke(
-            &Path::new(|b| {
-                b.move_to(start);
-                b.line_to(mid1);
-                b.line_to(mid2);
-                b.line_to(end);
-            }),
-            stroke,
-        );
+
+        frame.stroke(&Path::new(|b| {
+            b.move_to(start);
+            b.line_to(mid1);
+            b.line_to(mid2);
+            b.line_to(end);
+        }), stroke);
     }
 
     draw_arrowhead(frame, end);
 
+    // Shift basılıyken silme çarpısı
     if is_shift {
         frame.fill_rectangle(
-            Point::new(mid_screen.x - 7.0, mid_screen.y - 7.0),
-            Size::new(14.0, 14.0),
-            Color::from_rgb8(0xd9, 0x38, 0x38),
+            Point::new(mid_screen.x - 7.0, mid_screen.y - 7.0), 
+            Size::new(14.0, 14.0), 
+            Color::from_rgb8(0xd9, 0x38, 0x38)
         );
         frame.fill_text(canvas::Text {
             content: "×".to_string(),
