@@ -2,12 +2,74 @@
 use iced::mouse;
 use iced::widget::canvas::{self, Frame, Geometry, Image};
 use iced::widget::{
-    button, column, container, row, scrollable, slider, text, text_editor, text_input,
+    button, checkbox, column, container, row, scrollable, slider, text, text_editor, text_input,
 };
-use iced::{Color, Element, Length, Point, Rectangle, Renderer, Size, Theme};
-use uslu::image::ImageCropperState;
-use uslu::models::{FocusNode, NodeStatus};
+use iced::{Color, Element, Font, Length, Point, Rectangle, Renderer, Size, Theme};
+use crate::image::{ImageCropperState, BASE_IMAGE_SIZE, CROPPER_CANVAS_SIZE};
+use crate::models::{FocusNode, NodeStatus};
 use uuid::Uuid;
+
+pub const MATERIAL_FONT: Font = Font {
+    family: iced::font::Family::Name("Material Symbols Outlined"),
+    weight: iced::font::Weight::Normal,
+    stretch: iced::font::Stretch::Normal,
+    style: iced::font::Style::Normal,
+};
+
+const ICON_SETTINGS: &str = "\u{e8b8}";       // ⚙
+const ICON_DESCRIPTION: &str = "\u{e873}";    // 📝
+const ICON_PROGRESS_NOTES: &str = "\u{e85d}"; // 📌
+const ICON_INFO: &str = "\u{e88e}";           // 📊
+const ICON_RESET: &str = "\u{e5d5}";          // 🔄
+const ICON_LOCK: &str = "\u{e897}";           // 🔒
+const ICON_EDIT: &str = "\u{e3c9}";           // ✏️
+
+const ICON_SIZE_NAV: u16 = 16;
+const ICON_SIZE_BUTTON: u16 = 12;
+
+const TEXT_SIZE_TITLE: u16 = 13;
+const TEXT_SIZE_SUBTITLE: u16 = 10;
+const TEXT_SIZE_NORMAL: u16 = 12;
+const TEXT_SIZE_LABEL: u16 = 11;
+const TEXT_SIZE_PLACEHOLDER: u16 = 11;
+const TEXT_SIZE_BUTTON: u16 = 11;
+const TEXT_SIZE_HINT: u16 = 9;
+
+const SIDEBAR_PANEL_WIDTH: u16 = 360;
+const TAB_STRIP_WIDTH: u16 = 48;
+const TAB_CONTAINER_HEIGHT: f32 = 360.0;
+
+const EDITOR_PADDING: f32 = 4.0;
+const VIEW_PADDING: f32 = 8.0;
+const LINE_SPACING: f32 = 6.0;
+const TASK_ITEM_SPACING: f32 = 8.0;
+
+const SCROLLBAR_WIDTH: f32 = 1.0;
+
+const COLOR_GOLD: Color = Color::from_rgb(0.83, 0.68, 0.21);
+const COLOR_GOLD_DARK: Color = Color::from_rgb(0.15, 0.15, 0.18);
+const COLOR_BG_DARK: Color = Color::from_rgb(0.04, 0.04, 0.05);
+const COLOR_BG_PANEL: Color = Color::from_rgb(0.11, 0.11, 0.13);
+const COLOR_BG_CARD: Color = Color::from_rgb(0.13, 0.13, 0.16);
+const COLOR_BG_CONTAINER: Color = Color::from_rgb(0.09, 0.09, 0.12);
+const COLOR_BG_BUTTON_INACTIVE: Color = Color::from_rgb(0.16, 0.16, 0.19);
+const COLOR_BG_RESET_BTN: Color = Color::from_rgb(0.22, 0.22, 0.26);
+
+const COLOR_BORDER: Color = Color::from_rgb(0.16, 0.16, 0.20);
+const COLOR_BORDER_CROPPER: Color = Color::from_rgb(0.23, 0.23, 0.27);
+const COLOR_DELETE_BTN: Color = Color::from_rgb(0.85, 0.22, 0.22);
+
+const COLOR_TEXT_MUTED: Color = Color::from_rgb(0.47, 0.47, 0.50);
+const COLOR_TEXT_LABEL: Color = Color::from_rgb(0.56, 0.56, 0.60);
+const COLOR_TEXT_NORMAL: Color = Color::from_rgb(0.80, 0.80, 0.83);
+const COLOR_TEXT_ACTIVE: Color = Color::from_rgb(0.93, 0.93, 0.94);
+const COLOR_TEXT_CHECKED: Color = Color::from_rgb(0.48, 0.66, 0.48);
+const COLOR_TEXT_ACTIVE_LEVEL: Color = Color::from_rgb(0.48, 0.78, 0.48);
+
+const BUTTON_LABEL_LOCK: &str = "Tamam (Görünüme Geç)";
+const BUTTON_LABEL_EDIT: &str = "Metni Düzenle";
+const DESCRIPTION_PLACEHOLDER: &str = "Açıklama henüz eklenmedi. Düzenlemek için 'Metni Düzenle' butonuna basın.";
+const PROGRESS_NOTES_PLACEHOLDER: &str = "İlerleme notu henüz eklenmedi. Düzenlemek için 'Metni Düzenle' butonuna basın.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabType {
@@ -20,10 +82,19 @@ pub enum TabType {
 impl TabType {
     pub fn title(&self) -> &'static str {
         match self {
-            Self::General => "⚙ Genel",
-            Self::Description => "📝 Açıklama",
-            Self::ProgressNotes => "📌 İlerleme Notları",
-            Self::Info => "📊 Bilgi & Seviye",
+            Self::General => "Genel",
+            Self::Description => "Açıklama",
+            Self::ProgressNotes => "İlerleme Notları",
+            Self::Info => "Bilgi & Seviye",
+        }
+    }
+
+    pub fn icon(&self) -> &'static str {
+        match self {
+            Self::General => ICON_SETTINGS,
+            Self::Description => ICON_DESCRIPTION,
+            Self::ProgressNotes => ICON_PROGRESS_NOTES,
+            Self::Info => ICON_INFO,
         }
     }
 }
@@ -35,6 +106,9 @@ pub enum SidebarMessage {
 
     DescriptionAction(text_editor::Action),
     ProgressNotesAction(text_editor::Action),
+
+    ToggleDescriptionTask(usize),
+    ToggleProgressNotesTask(usize),
 
     OpenImagePicker,
     CropZoomChanged(f32),
@@ -128,55 +202,39 @@ pub fn sidebar_view<'a>(
     max_visible_level: usize,
 ) -> Element<'a, SidebarMessage> {
     if let Some(cropper) = cropper_state {
-        let cropper_canvas = canvas::Canvas::new(CropperProgram { state: cropper })
-            .width(240)
-            .height(240);
-
-        // Canvas'ı taşırmayacak kırpma konteyneri
-        let canvas_container = container(cropper_canvas)
-            .width(240)
-            .height(240)
-            .clip(true) // Tuval dışına çıkan tüm piksel çizimlerini GPU seviyesinde keser
-            .style(|_t| container::Style {
-                background: Some(iced::Background::Color(Color::from_rgb8(0x0a, 0x0a, 0x0c))),
-                border: iced::Border {
-                    color: Color::from_rgb8(0x3a, 0x3a, 0x44),
-                    width: 1.0,
-                    radius: 4.0.into(),
-                },
-                ..Default::default()
-            });
-
-        let cropper_view = column![
-            text("Kadrajı Ayarlayın")
-                .size(14)
-                .color(Color::from_rgb8(0xd4, 0xaf, 0x37)),
-            text("Fare ile sürükleyin, tekerlek ile zoom yapın.")
-                .size(10)
-                .color(Color::from_rgb8(0x88, 0x88, 0x90)),
-            canvas_container,
-            row![
-                button(text("Kırp ve Kaydet").size(12))
-                    .on_press(SidebarMessage::ApplyCropAndSave)
-                    .padding(8),
-                button(text("İptal").size(12))
-                    .on_press(SidebarMessage::CancelCrop)
-                    .padding(8),
-            ]
-            .spacing(8)
-        ]
-        .spacing(12)
-        .padding(12);
-
-        return container(cropper_view)
-            .width(360)
-            .height(Length::Fill)
-            .style(|_t| container::Style {
-                background: Some(iced::Background::Color(Color::from_rgb8(0x1c, 0x1c, 0x22))),
-                ..Default::default()
-            })
-            .into();
+        return build_cropper_view(cropper);
     }
+
+    let tab_strip = build_tab_strip(open_tabs);
+
+    if open_tabs.is_empty() {
+        return row![tab_strip].into();
+    }
+
+    let main_stack = build_tabs_content_stack(
+        form,
+        selected_node,
+        node_count,
+        edge_count,
+        open_tabs,
+        is_editing_enabled,
+        level_counts,
+        max_visible_level,
+    );
+
+    let scrollable_panel = container(scrollable(main_stack).height(Length::Fill))
+        .width(SIDEBAR_PANEL_WIDTH)
+        .height(Length::Fill)
+        .padding(10)
+        .style(|_t| container::Style {
+            background: Some(iced::Background::Color(COLOR_BG_PANEL)),
+            ..Default::default()
+        });
+
+    row![tab_strip, scrollable_panel].into()
+}
+
+fn build_tab_strip<'a>(open_tabs: &'a [TabType]) -> Element<'a, SidebarMessage> {
     let mut top_strip = column![].spacing(8);
 
     for tab in &[
@@ -186,41 +244,34 @@ pub fn sidebar_view<'a>(
         TabType::Info,
     ] {
         let is_open = open_tabs.contains(tab);
-        let label = match tab {
-            TabType::General => "⚙",
-            TabType::Description => "📝",
-            TabType::ProgressNotes => "📌",
-            TabType::Info => "📊",
-        };
+        let btn = button(text(tab.icon()).font(MATERIAL_FONT).size(ICON_SIZE_NAV))
+            .on_press(SidebarMessage::ToggleTab(*tab))
+            .padding(8)
+            .style(move |_t, _s| button::Style {
+                background: Some(iced::Background::Color(if is_open {
+                    COLOR_GOLD
+                } else {
+                    COLOR_BG_BUTTON_INACTIVE
+                })),
+                text_color: if is_open { Color::BLACK } else { Color::WHITE },
+                border: iced::border::rounded(6),
+                ..Default::default()
+            });
 
-        top_strip = top_strip.push(
-            button(text(label).size(16))
-                .on_press(SidebarMessage::ToggleTab(*tab))
-                .padding(8)
-                .style(move |_t, _s| button::Style {
-                    background: Some(iced::Background::Color(if is_open {
-                        Color::from_rgb8(0xd4, 0xaf, 0x37)
-                    } else {
-                        Color::from_rgb8(0x28, 0x28, 0x30)
-                    })),
-                    text_color: if is_open { Color::BLACK } else { Color::WHITE },
-                    border: iced::border::rounded(6),
-                    ..Default::default()
-                }),
-        );
+        top_strip = top_strip.push(btn);
     }
 
-    let reset_btn = button(text("🔄").size(16))
+    let reset_btn = button(text(ICON_RESET).font(MATERIAL_FONT).size(ICON_SIZE_NAV))
         .on_press(SidebarMessage::ResetView)
         .padding(8)
         .style(|_t, _s| button::Style {
-            background: Some(iced::Background::Color(Color::from_rgb8(0x38, 0x38, 0x42))),
+            background: Some(iced::Background::Color(COLOR_BG_RESET_BTN)),
             text_color: Color::WHITE,
             border: iced::border::rounded(6),
             ..Default::default()
         });
 
-    let tab_strip_container = container(
+    container(
         column![
             top_strip,
             container(reset_btn)
@@ -230,223 +281,606 @@ pub fn sidebar_view<'a>(
         .padding(6)
         .height(Length::Fill),
     )
-    .width(48)
+    .width(TAB_STRIP_WIDTH)
     .height(Length::Fill)
     .style(|_t| container::Style {
-        background: Some(iced::Background::Color(Color::from_rgb8(0x18, 0x18, 0x1c))),
+        background: Some(iced::Background::Color(COLOR_GOLD_DARK)),
         ..Default::default()
-    });
+    })
+    .into()
+}
 
-    if open_tabs.is_empty() {
-        return row![tab_strip_container].into();
-    }
-
-    let mut main_stack = column![].spacing(16).width(Length::Fill);
+fn build_tabs_content_stack<'a>(
+    form: &'a NodeForm,
+    selected_node: Option<&'a FocusNode>,
+    node_count: usize,
+    edge_count: usize,
+    open_tabs: &'a [TabType],
+    is_editing_enabled: bool,
+    level_counts: &std::collections::HashMap<usize, usize>,
+    max_visible_level: usize,
+) -> iced::widget::Column<'a, SidebarMessage> {
+    let mut stack = column![].spacing(16).width(Length::Fill);
 
     for tab in open_tabs {
-        let mut tab_card = column![].spacing(8);
-
-        let header = row![
-            text(tab.title())
-                .size(13)
-                .color(Color::from_rgb8(0xd4, 0xaf, 0x37)),
-            text(format!("({} düğüm, {} bağ)", node_count, edge_count))
-                .size(10)
-                .color(Color::from_rgb8(0x77, 0x77, 0x80)),
-        ]
-        .spacing(6)
-        .align_y(iced::Alignment::Center);
-
-        tab_card = tab_card.push(header);
-
-        match tab {
-            TabType::General => {
-                let mut gen_box = column![].spacing(10);
-
-                // 1. İSTER: Mutlak Düzenle Butonu (Kilit mekanizması)
-                if selected_node.is_some() {
-                    let lock_btn_label = if is_editing_enabled {
-                        "🔒 Düzenlemeyi Kilitle"
-                    } else {
-                        "✏️ Metin/Resim Düzenle"
-                    };
-                    gen_box = gen_box.push(
-                        button(text(lock_btn_label).size(12))
-                            .on_press(SidebarMessage::ToggleEditing)
-                            .padding(8),
-                    );
-                }
-
-                // Sadece 'İlerleme' slider'ı HER ZAMAN aktif. Başlık, Resim, Açıklama ancak Düzenle tıklandıysa aktif!
-                if is_editing_enabled || selected_node.is_none() {
-                    gen_box = gen_box.push(
-                        column![
-                            text("Başlık")
-                                .size(11)
-                                .color(Color::from_rgb8(0x90, 0x90, 0x99)),
-                            text_input("Başlık...", &form.title)
-                                .on_input(SidebarMessage::TitleChanged)
-                                .padding(6),
-                        ]
-                        .spacing(2),
-                    );
-
-                    gen_box = gen_box.push(
-                        column![
-                            text("Resim Seç")
-                                .size(11)
-                                .color(Color::from_rgb8(0x90, 0x90, 0x99)),
-                            button(text("Görsel Değiştir...").size(11))
-                                .on_press(SidebarMessage::OpenImagePicker)
-                                .padding(6),
-                        ]
-                        .spacing(2),
-                    );
-                }
-
-                // İlerleme Slider'ı (Her zaman değişebilir)
-                gen_box = gen_box.push(
-                    column![
-                        row![
-                            text("İlerleme")
-                                .size(11)
-                                .color(Color::from_rgb8(0x90, 0x90, 0x99)),
-                            text(format!("%{:.0}", form.progress))
-                                .size(11)
-                                .color(Color::from_rgb8(0xd4, 0xaf, 0x37)),
-                        ]
-                        .spacing(8),
-                        slider(0.0..=100.0, form.progress, SidebarMessage::ProgressChanged)
-                            .step(1.0),
-                    ]
-                    .spacing(2),
-                );
-
-                if selected_node.is_none() {
-                    gen_box = gen_box.push(
-                        button(text("Yeni Düğüm Ekle").size(12))
-                            .on_press_maybe(if form.is_valid() {
-                                Some(SidebarMessage::AddNode)
-                            } else {
-                                None
-                            })
-                            .padding(8),
-                    );
-                }
-
-                tab_card = tab_card.push(gen_box);
-            }
-            TabType::Description => {
-                let editor_widget = text_editor(&form.description_editor)
-                    .on_action(SidebarMessage::DescriptionAction)
-                    .padding(1)
-                    .height(Length::Fill);
-
-                let editor_container = container(editor_widget)
-                    .height(400)
-                    .width(Length::Fill)
-                    .style(|_t| container::Style {
-                        background: Some(iced::Background::Color(Color::from_rgb8(
-                            0x18, 0x18, 0x1e,
-                        ))),
-                        ..Default::default()
-                    });
-
-                tab_card = tab_card.push(editor_container);
-            }
-
-            TabType::ProgressNotes => {
-                let editor_widget = text_editor(&form.progress_notes_editor)
-                    .on_action(SidebarMessage::ProgressNotesAction)
-                    .padding(1)
-                    .height(Length::Fill);
-
-                let editor_container = container(editor_widget)
-                    .height(400)
-                    .width(Length::Fill)
-                    .style(|_t| container::Style {
-                        background: Some(iced::Background::Color(Color::from_rgb8(
-                            0x18, 0x18, 0x1e,
-                        ))),
-                        ..Default::default()
-                    });
-
-                tab_card = tab_card.push(editor_container);
-            }
-            TabType::Info => {
-                let mut info_box = column![].spacing(12);
-
-                info_box = info_box.push(
-                    text(format!("Toplam Düğüm: {}", node_count))
-                        .size(13)
-                        .color(Color::WHITE),
-                );
-                info_box = info_box.push(
-                    text(format!("Toplam Bağlantı: {}", edge_count))
-                        .size(12)
-                        .color(Color::from_rgb8(0x88, 0x88, 0x90)),
-                );
-
-                let total_levels = level_counts.keys().max().map(|m| m + 1).unwrap_or(0);
-                info_box = info_box.push(
-                    text(format!("Toplam Seviye Sayısı: {}", total_levels))
-                        .size(12)
-                        .color(Color::from_rgb8(0xd4, 0xaf, 0x37)),
-                );
-
-                // Seviye Detay Listesi
-                let mut lvl_list = column![].spacing(4);
-                for lvl in 0..total_levels {
-                    let count = level_counts.get(&lvl).copied().unwrap_or(0);
-                    lvl_list = lvl_list.push(
-                        text(format!(" • Seviye {}: {} düğüm", lvl + 1, count))
-                            .size(11)
-                            .color(if lvl < max_visible_level {
-                                Color::from_rgb8(0x7a, 0xc8, 0x7a)
-                            } else {
-                                Color::from_rgb8(0x88, 0x88, 0x90)
-                            }),
-                    );
-                }
-                info_box = info_box.push(lvl_list);
-
-                // Seviye Görünürlük Slider'ı
-                if total_levels > 0 {
-                    info_box = info_box.push(column![
-                    text(format!("Açık Seviye Sınırı: Seviye 1 - {}", max_visible_level))
-                        .size(11)
-                        .color(Color::from_rgb8(0xd4, 0xaf, 0x37)),
-                    slider(1.0..=(total_levels as f32), max_visible_level as f32, |val| SidebarMessage::MaxLevelSliderChanged(val as usize)).step(1.0),
-                    text("Not: Slider ile toplu açıp kapatabilirsiniz, ardından tuvalde Ctrl+Tık ile esnek müdahale edebilirsiniz.")
-                        .size(9).color(Color::from_rgb8(0x66, 0x66, 0x70))
-                ].spacing(6));
-                }
-
-                tab_card = tab_card.push(info_box);
-            }
-        }
+        let tab_card = build_single_tab_card(
+            *tab,
+            form,
+            selected_node,
+            node_count,
+            edge_count,
+            is_editing_enabled,
+            level_counts,
+            max_visible_level,
+        );
 
         let card_container = container(tab_card)
             .width(Length::Fill)
             .padding(10)
             .style(|_t| container::Style {
-                background: Some(iced::Background::Color(Color::from_rgb8(0x22, 0x22, 0x28))),
+                background: Some(iced::Background::Color(COLOR_BG_CARD)),
                 ..Default::default()
             });
 
-        main_stack = main_stack.push(card_container);
+        stack = stack.push(card_container);
     }
 
-    let scrollable_panel = container(scrollable(main_stack).height(Length::Fill))
-        .width(360)
+    stack
+}
+
+fn build_single_tab_card<'a>(
+    tab: TabType,
+    form: &'a NodeForm,
+    selected_node: Option<&'a FocusNode>,
+    node_count: usize,
+    edge_count: usize,
+    is_editing_enabled: bool,
+    level_counts: &std::collections::HashMap<usize, usize>,
+    max_visible_level: usize,
+) -> Element<'a, SidebarMessage> {
+    let header = row![
+        text(tab.icon()).font(MATERIAL_FONT).size(TEXT_SIZE_TITLE).color(COLOR_GOLD),
+        text(tab.title()).size(TEXT_SIZE_TITLE).color(COLOR_GOLD),
+        text(format!("({} düğüm, {} bağ)", node_count, edge_count))
+            .size(TEXT_SIZE_SUBTITLE)
+            .color(COLOR_TEXT_MUTED),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
+    let content: Element<'a, SidebarMessage> = match tab {
+        TabType::General => build_general_tab_content(form, selected_node, is_editing_enabled),
+        TabType::Description => build_description_tab_content(form, is_editing_enabled),
+        TabType::ProgressNotes => build_progress_notes_tab_content(form, is_editing_enabled),
+        TabType::Info => build_info_tab_content(node_count, edge_count, level_counts, max_visible_level),
+    };
+
+    column![header, content].spacing(8).into()
+}
+
+fn build_general_tab_content<'a>(
+    form: &'a NodeForm,
+    selected_node: Option<&'a FocusNode>,
+    is_editing_enabled: bool,
+) -> Element<'a, SidebarMessage> {
+    let mut gen_box = column![].spacing(10);
+
+    if selected_node.is_some() {
+        let (icon, label_text) = if is_editing_enabled {
+            (ICON_LOCK, "Düzenlemeyi Kilitle")
+        } else {
+            (ICON_EDIT, "Metin/Resim Düzenle")
+        };
+
+        let lock_btn_content = row![
+            text(icon).font(MATERIAL_FONT).size(ICON_SIZE_BUTTON),
+            text(label_text).size(TEXT_SIZE_BUTTON),
+        ]
+        .spacing(6)
+        .align_y(iced::Alignment::Center);
+
+        gen_box = gen_box.push(
+            button(lock_btn_content)
+                .on_press(SidebarMessage::ToggleEditing)
+                .padding(8),
+        );
+    }
+
+    if is_editing_enabled || selected_node.is_none() {
+        gen_box = gen_box.push(build_title_input_field(&form.title));
+        gen_box = gen_box.push(build_image_picker_field());
+    }
+
+    gen_box = gen_box.push(build_progress_slider_field(form.progress));
+
+    if selected_node.is_none() {
+        gen_box = gen_box.push(
+            button(text("Yeni Düğüm Ekle").size(TEXT_SIZE_BUTTON))
+                .on_press_maybe(if form.is_valid() {
+                    Some(SidebarMessage::AddNode)
+                } else {
+                    None
+                })
+                .padding(8),
+        );
+    } else {
+        gen_box = gen_box.push(
+            button(text("Seçili Düğümü Sil").size(TEXT_SIZE_BUTTON))
+                .on_press(SidebarMessage::DeleteSelected)
+                .padding(8)
+                .style(|_t, _s| button::Style {
+                    background: Some(iced::Background::Color(COLOR_DELETE_BTN)),
+                    text_color: Color::WHITE,
+                    border: iced::border::rounded(4),
+                    ..Default::default()
+                }),
+        );
+    }
+
+    gen_box.into()
+}
+
+fn build_title_input_field<'a>(title: &str) -> Element<'a, SidebarMessage> {
+    column![
+        text("Başlık").size(TEXT_SIZE_LABEL).color(COLOR_TEXT_LABEL),
+        text_input("Başlık...", title)
+            .on_input(SidebarMessage::TitleChanged)
+            .padding(6),
+    ]
+    .spacing(2)
+    .into()
+}
+
+fn build_image_picker_field<'a>() -> Element<'a, SidebarMessage> {
+    column![
+        text("Resim Seç")
+            .size(TEXT_SIZE_LABEL)
+            .color(COLOR_TEXT_LABEL),
+        button(text("Görsel Değiştir...").size(TEXT_SIZE_LABEL))
+            .on_press(SidebarMessage::OpenImagePicker)
+            .padding(6),
+    ]
+    .spacing(2)
+    .into()
+}
+
+fn build_progress_slider_field<'a>(progress: f32) -> Element<'a, SidebarMessage> {
+    column![
+        row![
+            text("İlerleme")
+                .size(TEXT_SIZE_LABEL)
+                .color(COLOR_TEXT_LABEL),
+            text(format!("%{:.0}", progress))
+                .size(TEXT_SIZE_LABEL)
+                .color(COLOR_GOLD),
+        ]
+        .spacing(8),
+        slider(0.0..=100.0, progress, SidebarMessage::ProgressChanged).step(1.0_f32),
+    ]
+    .spacing(2)
+    .into()
+}
+
+fn build_description_tab_content<'a>(
+    form: &'a NodeForm,
+    is_editing_enabled: bool,
+) -> Element<'a, SidebarMessage> {
+    let header_button = build_tab_toggle_button(is_editing_enabled);
+
+    let content_view = if is_editing_enabled {
+        build_text_editor_container(
+            &form.description_editor,
+            SidebarMessage::DescriptionAction,
+        )
+    } else {
+        render_formatted_markdown_view(
+            &form.get_description_text(),
+            DESCRIPTION_PLACEHOLDER,
+            SidebarMessage::ToggleDescriptionTask,
+        )
+    };
+
+    column![row![header_button].padding(2), content_view]
+        .spacing(6)
+        .into()
+}
+
+fn build_progress_notes_tab_content<'a>(
+    form: &'a NodeForm,
+    is_editing_enabled: bool,
+) -> Element<'a, SidebarMessage> {
+    let header_button = build_tab_toggle_button(is_editing_enabled);
+
+    let content_view = if is_editing_enabled {
+        build_text_editor_container(
+            &form.progress_notes_editor,
+            SidebarMessage::ProgressNotesAction,
+        )
+    } else {
+        render_formatted_markdown_view(
+            &form.get_progress_notes_text(),
+            PROGRESS_NOTES_PLACEHOLDER,
+            SidebarMessage::ToggleProgressNotesTask,
+        )
+    };
+
+    column![row![header_button].padding(2), content_view]
+        .spacing(6)
+        .into()
+}
+
+fn build_info_tab_content<'a>(
+    node_count: usize,
+    edge_count: usize,
+    level_counts: &std::collections::HashMap<usize, usize>,
+    max_visible_level: usize,
+) -> Element<'a, SidebarMessage> {
+    let mut info_box = column![].spacing(12);
+
+    info_box = info_box.push(
+        text(format!("Toplam Düğüm: {}", node_count))
+            .size(TEXT_SIZE_TITLE)
+            .color(Color::WHITE),
+    );
+    info_box = info_box.push(
+        text(format!("Toplam Bağlantı: {}", edge_count))
+            .size(TEXT_SIZE_NORMAL)
+            .color(COLOR_TEXT_MUTED),
+    );
+
+    let total_levels = level_counts.keys().max().map(|m| m + 1).unwrap_or(0);
+    info_box = info_box.push(
+        text(format!("Toplam Seviye Sayısı: {}", total_levels))
+            .size(TEXT_SIZE_NORMAL)
+            .color(COLOR_GOLD),
+    );
+
+    let mut lvl_list = column![].spacing(4);
+    for lvl in 0..total_levels {
+        let count = level_counts.get(&lvl).copied().unwrap_or(0);
+        lvl_list = lvl_list.push(
+            text(format!(" • Seviye {}: {} düğüm", lvl + 1, count))
+                .size(TEXT_SIZE_LABEL)
+                .color(if lvl < max_visible_level {
+                    COLOR_TEXT_ACTIVE_LEVEL
+                } else {
+                    COLOR_TEXT_MUTED
+                }),
+        );
+    }
+    info_box = info_box.push(lvl_list);
+
+    if total_levels > 0 {
+        info_box = info_box.push(
+            column![
+                text(format!("Açık Seviye Sınırı: Seviye 1 - {}", max_visible_level))
+                    .size(TEXT_SIZE_LABEL)
+                    .color(COLOR_GOLD),
+                slider(1.0..=(total_levels as f32), max_visible_level as f32, |val| {
+                    SidebarMessage::MaxLevelSliderChanged(val as usize)
+                })
+                .step(1.0_f32),
+                text("Not: Slider ile toplu açıp kapatabilir, tuvalde Ctrl+Tık ile esnek müdahale edebilirsiniz.")
+                    .size(TEXT_SIZE_HINT)
+                    .color(COLOR_TEXT_MUTED)
+            ]
+            .spacing(6),
+        );
+    }
+
+    info_box.into()
+}
+
+fn custom_thin_scrollbar_style(_theme: &Theme, _status: scrollable::Status) -> scrollable::Style {
+    scrollable::Style {
+        container: container::Style::default(),
+        vertical_rail: scrollable::Rail {
+            background: Some(iced::Background::Color(Color::from_rgba8(0, 0, 0, 0.15))),
+            border: iced::Border::default(),
+            scroller: scrollable::Scroller {
+                color: COLOR_GOLD,
+                border: iced::Border::default(),
+            },
+        },
+        horizontal_rail: scrollable::Rail {
+            background: None,
+            border: iced::Border::default(),
+            scroller: scrollable::Scroller {
+                color: Color::TRANSPARENT,
+                border: iced::Border::default(),
+            },
+        },
+        gap: None,
+    }
+}
+
+fn build_tab_toggle_button<'a>(is_editing_enabled: bool) -> Element<'a, SidebarMessage> {
+    let (icon, label_text) = if is_editing_enabled {
+        (ICON_LOCK, BUTTON_LABEL_LOCK)
+    } else {
+        (ICON_EDIT, BUTTON_LABEL_EDIT)
+    };
+
+    let btn_content = row![
+        text(icon).font(MATERIAL_FONT).size(TEXT_SIZE_BUTTON),
+        text(label_text).size(TEXT_SIZE_BUTTON),
+    ]
+    .spacing(6)
+    .align_y(iced::Alignment::Center);
+
+    button(btn_content)
+        .on_press(SidebarMessage::ToggleEditing)
+        .padding(6)
+        .into()
+}
+
+fn build_text_editor_container<'a>(
+    editor_content: &'a text_editor::Content,
+    on_action_msg: fn(text_editor::Action) -> SidebarMessage,
+) -> Element<'a, SidebarMessage> {
+    let editor_widget = text_editor(editor_content)
+        .on_action(on_action_msg)
+        .padding(EDITOR_PADDING)
+        .height(Length::Shrink);
+
+    let thin_scrollbar = scrollable::Scrollbar::new()
+        .width(SCROLLBAR_WIDTH)
+        .margin(0.0)
+        .scroller_width(SCROLLBAR_WIDTH);
+
+    let scrollable_editor = scrollable(editor_widget)
+        .width(Length::Fill)
         .height(Length::Fill)
-        .padding(10)
+        .direction(scrollable::Direction::Vertical(thin_scrollbar))
+        .style(custom_thin_scrollbar_style);
+
+    container(scrollable_editor)
+        .height(TAB_CONTAINER_HEIGHT)
+        .width(Length::Fill)
+        .style(|_theme| container::Style {
+            background: Some(iced::Background::Color(COLOR_BG_CONTAINER)),
+            border: iced::Border {
+                color: COLOR_BORDER,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn render_formatted_markdown_view<'a, F>(
+    raw_text: &str,
+    empty_placeholder: &'static str,
+    make_msg: F,
+) -> Element<'a, SidebarMessage>
+where
+    F: Fn(usize) -> SidebarMessage + Copy + 'static,
+{
+    if raw_text.trim().is_empty() {
+        return build_empty_placeholder_container(empty_placeholder);
+    }
+
+    let line_list = build_markdown_line_list(raw_text, make_msg);
+
+    let thin_scrollbar = scrollable::Scrollbar::new()
+        .width(SCROLLBAR_WIDTH)
+        .margin(0.0)
+        .scroller_width(SCROLLBAR_WIDTH);
+
+    let scrollable_view = scrollable(line_list.padding(VIEW_PADDING))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .direction(scrollable::Direction::Vertical(thin_scrollbar))
+        .style(custom_thin_scrollbar_style);
+
+    container(scrollable_view)
+        .width(Length::Fill)
+        .height(TAB_CONTAINER_HEIGHT)
+        .style(|_theme| container::Style {
+            background: Some(iced::Background::Color(COLOR_BG_CONTAINER)),
+            border: iced::Border {
+                color: COLOR_BORDER,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
+            ..Default::default()
+        })
+        .into()
+}
+
+fn build_empty_placeholder_container<'a>(
+    placeholder_text: &'static str,
+) -> Element<'a, SidebarMessage> {
+    container(
+        column![
+            text(placeholder_text)
+                .size(TEXT_SIZE_PLACEHOLDER)
+                .color(COLOR_TEXT_MUTED),
+        ]
+        .spacing(8)
+        .padding(12),
+    )
+    .width(Length::Fill)
+    .height(TAB_CONTAINER_HEIGHT)
+    .style(|_theme| container::Style {
+        background: Some(iced::Background::Color(COLOR_BG_CONTAINER)),
+        border: iced::Border {
+            color: COLOR_BORDER,
+            width: 1.0,
+            radius: 4.0.into(),
+        },
+        ..Default::default()
+    })
+    .into()
+}
+
+fn build_markdown_line_list<'a, F>(
+    raw_text: &str,
+    make_msg: F,
+) -> iced::widget::Column<'a, SidebarMessage>
+where
+    F: Fn(usize) -> SidebarMessage + Copy + 'static,
+{
+    let mut line_list = column![].spacing(LINE_SPACING);
+
+    for (line_idx, line) in raw_text.lines().enumerate() {
+        if line.trim().is_empty() {
+            line_list = line_list.push(container(text("")).height(4));
+            continue;
+        }
+
+        if let Some((is_checked, label)) = parse_task_line(line) {
+            let task_row = build_task_item_row(is_checked, label, line_idx, make_msg);
+            line_list = line_list.push(task_row);
+        } else {
+            let normal_line = build_normal_text_row(line);
+            line_list = line_list.push(normal_line);
+        }
+    }
+
+    line_list
+}
+
+fn build_task_item_row<'a, F>(
+    is_checked: bool,
+    label: &str,
+    line_idx: usize,
+    make_msg: F,
+) -> Element<'a, SidebarMessage>
+where
+    F: Fn(usize) -> SidebarMessage + Copy + 'static,
+{
+    let task_checkbox = checkbox("", is_checked).on_toggle(move |_| make_msg(line_idx));
+
+    let label_color = if is_checked {
+        COLOR_TEXT_CHECKED
+    } else {
+        COLOR_TEXT_ACTIVE
+    };
+
+    let label_widget = text(label.to_string())
+        .size(TEXT_SIZE_NORMAL)
+        .color(label_color);
+
+    row![task_checkbox, label_widget]
+        .spacing(TASK_ITEM_SPACING)
+        .align_y(iced::Alignment::Center)
+        .into()
+}
+
+fn build_normal_text_row<'a>(line: &str) -> Element<'a, SidebarMessage> {
+    text(line.to_string())
+        .size(TEXT_SIZE_NORMAL)
+        .color(COLOR_TEXT_NORMAL)
+        .into()
+}
+
+pub fn toggle_task_on_line(text: &str, line_idx: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if line_idx >= lines.len() {
+        return text.to_string();
+    }
+
+    let mut new_lines = Vec::with_capacity(lines.len());
+    for (i, line) in lines.iter().enumerate() {
+        if i == line_idx {
+            let line_str = *line;
+            let toggled = if line_str.contains("- [ ]") {
+                line_str.replacen("- [ ]", "- [x]", 1)
+            } else if line_str.contains("- [x]") {
+                line_str.replacen("- [x]", "- [ ]", 1)
+            } else if line_str.contains("- [X]") {
+                line_str.replacen("- [X]", "- [ ]", 1)
+            } else if line_str.contains("[ ]") {
+                line_str.replacen("[ ]", "[x]", 1)
+            } else if line_str.contains("[x]") {
+                line_str.replacen("[x]", "[ ]", 1)
+            } else if line_str.contains("[X]") {
+                line_str.replacen("[X]", "[ ]", 1)
+            } else {
+                line_str.to_string()
+            };
+            new_lines.push(toggled);
+        } else {
+            new_lines.push(line.to_string());
+        }
+    }
+
+    let mut result = new_lines.join("\n");
+    if text.ends_with('\n') {
+        result.push('\n');
+    }
+    result
+}
+
+fn parse_task_line(line: &str) -> Option<(bool, &str)> {
+    let trimmed = line.trim_start();
+    if let Some(rest) = trimmed.strip_prefix("- [ ]") {
+        Some((false, rest.trim_start()))
+    } else if let Some(rest) = trimmed.strip_prefix("- [x]") {
+        Some((true, rest.trim_start()))
+    } else if let Some(rest) = trimmed.strip_prefix("- [X]") {
+        Some((true, rest.trim_start()))
+    } else if let Some(rest) = trimmed.strip_prefix("[ ]") {
+        Some((false, rest.trim_start()))
+    } else if let Some(rest) = trimmed.strip_prefix("[x]") {
+        Some((true, rest.trim_start()))
+    } else if let Some(rest) = trimmed.strip_prefix("[X]") {
+        Some((true, rest.trim_start()))
+    } else {
+        None
+    }
+}
+
+fn build_cropper_view<'a>(cropper: &'a ImageCropperState) -> Element<'a, SidebarMessage> {
+    let cropper_canvas = canvas::Canvas::new(CropperProgram { state: cropper })
+        .width(CROPPER_CANVAS_SIZE)
+        .height(CROPPER_CANVAS_SIZE);
+
+    let canvas_container = container(cropper_canvas)
+        .width(CROPPER_CANVAS_SIZE)
+        .height(CROPPER_CANVAS_SIZE)
+        .clip(true)
         .style(|_t| container::Style {
-            background: Some(iced::Background::Color(Color::from_rgb8(0x1c, 0x1c, 0x22))),
+            background: Some(iced::Background::Color(COLOR_BG_DARK)),
+            border: iced::Border {
+                color: COLOR_BORDER_CROPPER,
+                width: 1.0,
+                radius: 4.0.into(),
+            },
             ..Default::default()
         });
 
-    row![tab_strip_container, scrollable_panel].into()
+    let cropper_view = column![
+        text("Kadrajı Ayarlayın")
+            .size(14)
+            .color(COLOR_GOLD),
+        text("Fare ile sürükleyin, tekerlek ile zoom yapın.")
+            .size(10)
+            .color(COLOR_TEXT_MUTED),
+        canvas_container,
+        row![
+            button(text("Kırp ve Kaydet").size(TEXT_SIZE_NORMAL))
+                .on_press(SidebarMessage::ApplyCropAndSave)
+                .padding(8),
+            button(text("İptal").size(TEXT_SIZE_NORMAL))
+                .on_press(SidebarMessage::CancelCrop)
+                .padding(8),
+        ]
+        .spacing(8)
+    ]
+    .spacing(12)
+    .padding(12);
+
+    container(cropper_view)
+        .width(SIDEBAR_PANEL_WIDTH)
+        .height(Length::Fill)
+        .style(|_t| container::Style {
+            background: Some(iced::Background::Color(COLOR_BG_PANEL)),
+            ..Default::default()
+        })
+        .into()
 }
 
 #[derive(Default)]
@@ -505,10 +939,7 @@ impl<'a> canvas::Program<SidebarMessage> for CropperProgram<'a> {
                     mouse::ScrollDelta::Lines { y, .. } => y * 0.1,
                     mouse::ScrollDelta::Pixels { y, .. } => y * 0.002,
                 };
-                // Minimum zoom, resmin küçük kenarının (base_size=200) her zaman
-                // 240px'lik kırpma kutusunu tam kaplamasını garanti eder (240/200 = 1.2).
-                // Bu olmadan zoom 1.0'da bile resim kutuyu doldurmuyor ve boşluk kalıyordu.
-                const MIN_ZOOM: f32 = 240.0 / 200.0;
+                const MIN_ZOOM: f32 = CROPPER_CANVAS_SIZE / BASE_IMAGE_SIZE;
                 let new_zoom = (self.state.zoom + zoom_delta).clamp(MIN_ZOOM, 5.0);
                 (
                     iced::event::Status::Captured,
@@ -530,14 +961,13 @@ impl<'a> canvas::Program<SidebarMessage> for CropperProgram<'a> {
         let mut frame = Frame::new(renderer, bounds.size());
         let center = Point::new(bounds.width / 2.0, bounds.height / 2.0);
 
-        // 1. Resmin Orijinal Boyutları ve Oranı (Bükülmeyi Önler)
         let (orig_w, orig_h) = (
             self.state.original_image.width() as f32,
             self.state.original_image.height() as f32,
         );
         let aspect_ratio = orig_w / orig_h;
 
-        let base_size = 200.0;
+        let base_size = BASE_IMAGE_SIZE;
         let (base_img_w, base_img_h) = if aspect_ratio >= 1.0 {
             (base_size * aspect_ratio, base_size)
         } else {
@@ -552,13 +982,6 @@ impl<'a> canvas::Program<SidebarMessage> for CropperProgram<'a> {
             center.y - img_h / 2.0 + self.state.offset_y,
         );
 
-        // 2. Resim Tam Orijinal Şekliyle Çizilir (Ezilme / Bükülme YOK)
-        // ÖNEMLİ: draw_image çağrısını frame.with_clip içine alıyoruz.
-        // Frame::new zaten kendi bounds'u dışına taşan çizimleri kesmesi gerekiyor,
-        // ancak resim (Image) primitive'leri bazı iced sürümlerinde/backend'lerde
-        // bu clip'e tam uymayıp taşabiliyor; with_clip bunu kesin olarak garanti eder.
-        // Sonuç: resim ne kadar büyütülür/kaydırılırsa kaydırılsın, 240x240'lık
-        // kutunun dışına asla tek bir piksel bile taşmaz (alttaki butonların üstüne çıkmaz).
         frame.with_clip(Rectangle::with_size(bounds.size()), |frame| {
             frame.draw_image(
                 Rectangle::new(img_pos, Size::new(img_w, img_h)),
@@ -566,17 +989,34 @@ impl<'a> canvas::Program<SidebarMessage> for CropperProgram<'a> {
             );
         });
 
-        // 4. Siyah Tuvalin Sınır Çizgisi (İnce İçi Gösteren Çerçeve)
         frame.stroke_rectangle(
             Point::ORIGIN,
             bounds.size(),
             canvas::Stroke {
-                style: canvas::Style::Solid(Color::from_rgb8(0x3a, 0x3a, 0x44)),
+                style: canvas::Style::Solid(COLOR_BORDER_CROPPER),
                 width: 1.0,
                 ..Default::default()
             },
         );
 
         vec![frame.into_geometry()]
+    }
+}
+
+// sidebar.rs dosyasının en altına ekleyiniz:
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_toggle_task_on_line() {
+        let input = "- [ ] Görev 1\n- [x] Görev 2\nNormal satır";
+        
+        let toggled1 = toggle_task_on_line(input, 0);
+        assert_eq!(toggled1, "- [x] Görev 1\n- [x] Görev 2\nNormal satır");
+
+        let toggled2 = toggle_task_on_line(&toggled1, 1);
+        assert_eq!(toggled2, "- [x] Görev 1\n- [ ] Görev 2\nNormal satır");
     }
 }

@@ -1,9 +1,17 @@
 // src/sugiyama.rs
-// Tidy-Tree + Direct Sibling Grouping + Multi-parent Centering Layout Engine
-
 use crate::models::{FocusGraph, FocusNode};
 use std::collections::{HashMap, HashSet};
 use uuid::Uuid;
+
+const BARYCENTER_SCALE_FACTOR: usize = 1000;
+const CROSSING_REDUCTION_PASSES: usize = 4;
+
+const SIBLING_X_GAP: f32 = 60.0;
+const UNCONNECTED_GROUP_GAP: f32 = 180.0;
+const LAYER_Y_GAP: f32 = 120.0;
+
+const DEFAULT_ORIGIN_X: f32 = 0.0;
+const CENTER_SPLIT_DIVISOR: f32 = 2.0;
 
 pub struct SugiyamaEngine;
 
@@ -14,324 +22,404 @@ impl SugiyamaEngine {
         }
 
         let layers = Self::assign_layers(graph);
-        let ordered = Self::reduce_crossings(graph, &layers);
-        Self::assign_coordinates(graph, &ordered, frozen);
+        let ordered_layers = Self::reduce_crossings(graph, &layers);
+        Self::assign_coordinates(graph, &ordered_layers, frozen);
     }
 
-    /// Aşama 1 — Katmanlama (Topolojik Derinlik)
     fn assign_layers(graph: &FocusGraph) -> HashMap<Uuid, usize> {
-        let mut layers: HashMap<Uuid, usize> = HashMap::new();
-        let max_iterations = graph.nodes.len();
+        graph.get_node_levels()
+    }
 
-        for _ in 0..max_iterations {
-            let mut changed = false;
+    fn reduce_crossings(graph: &FocusGraph, layers: &HashMap<Uuid, usize>) -> Vec<Vec<Uuid>> {
+        let mut grouped_layers = Self::group_nodes_by_layer(layers);
 
-            for node in &graph.nodes {
-                let parents = graph.parents_of(node.id);
-                let new_layer = if parents.is_empty() {
-                    0
-                } else {
-                    parents
-                        .iter()
-                        .map(|p| layers.get(p).copied().unwrap_or(0))
-                        .max()
-                        .unwrap_or(0)
-                        + 1
-                };
-
-                if layers.get(&node.id).copied() != Some(new_layer) {
-                    layers.insert(node.id, new_layer);
-                    changed = true;
-                }
-            }
-
-            if !changed {
-                break;
-            }
+        for _ in 0..CROSSING_REDUCTION_PASSES {
+            Self::sweep_downward(graph, &mut grouped_layers);
+            Self::sweep_upward(graph, &mut grouped_layers);
         }
 
-        layers
+        grouped_layers
     }
 
-    /// Aşama 2 — Çakışma Azaltma (Barycenter Heuristic)
-    fn reduce_crossings(graph: &FocusGraph, layers: &HashMap<Uuid, usize>) -> Vec<Vec<Uuid>> {
+    fn group_nodes_by_layer(layers: &HashMap<Uuid, usize>) -> Vec<Vec<Uuid>> {
         let max_layer = *layers.values().max().unwrap_or(&0);
         let mut grouped: Vec<Vec<Uuid>> = vec![Vec::new(); max_layer + 1];
-        for (&id, &layer) in layers {
-            if let Some(slot) = grouped.get_mut(layer) {
-                slot.push(id);
+
+        let mut sorted_entries: Vec<_> = layers.iter().collect();
+        sorted_entries.sort_by_key(|(id, _)| **id);
+
+        for (&node_id, &layer_idx) in sorted_entries {
+            if let Some(layer_slot) = grouped.get_mut(layer_idx) {
+                layer_slot.push(node_id);
             }
         }
 
-        for _ in 0..4 {
-            for i in 1..grouped.len() {
-                let (left, right) = grouped.split_at_mut(i);
-                Self::sort_by_barycenter(graph, &mut right[0], &left[i - 1], true);
-            }
-            for i in (0..grouped.len() - 1).rev() {
-                let (left, right) = grouped.split_at_mut(i + 1);
-                Self::sort_by_barycenter(graph, &mut left[i], &right[0], false);
-            }
-        }
         grouped
     }
 
-    fn sort_by_barycenter(
+    fn sweep_downward(graph: &FocusGraph, grouped_layers: &mut [Vec<Uuid>]) {
+        for i in 1..grouped_layers.len() {
+            let (left_slice, right_slice) = grouped_layers.split_at_mut(i);
+            let previous_layer = &left_slice[i - 1];
+            let current_layer = &mut right_slice[0];
+
+            Self::sort_layer_by_barycenter(graph, current_layer, previous_layer, true);
+        }
+    }
+
+    fn sweep_upward(graph: &FocusGraph, grouped_layers: &mut [Vec<Uuid>]) {
+        for i in (0..grouped_layers.len() - 1).rev() {
+            let (left_slice, right_slice) = grouped_layers.split_at_mut(i + 1);
+            let current_layer = &mut left_slice[i];
+            let next_layer = &right_slice[0];
+
+            Self::sort_layer_by_barycenter(graph, current_layer, next_layer, false);
+        }
+    }
+
+    fn sort_layer_by_barycenter(
         graph: &FocusGraph,
-        layer: &mut Vec<Uuid>,
-        reference: &[Uuid],
+        target_layer: &mut [Uuid],
+        reference_layer: &[Uuid],
         parents_to_children: bool,
     ) {
-        let pos_in_ref: HashMap<Uuid, usize> = reference
-            .iter()
-            .enumerate()
-            .map(|(i, id)| (*id, i))
-            .collect();
+        let ref_positions = Self::build_position_map(reference_layer);
 
-        layer.sort_by_key(|id| {
-            let neighbors: Vec<Uuid> = if parents_to_children {
-                graph.parents_of(*id)
+        target_layer.sort_by_key(|&node_id| {
+            let neighbors = if parents_to_children {
+                graph.parents_of(node_id)
             } else {
-                graph.children_of(*id)
+                graph.children_of(node_id)
             };
-            if neighbors.is_empty() {
-                return 0;
-            }
-            let sum: usize = neighbors
-                .iter()
-                .filter_map(|n| pos_in_ref.get(n).copied())
-                .sum();
-            (sum * 1000) / neighbors.len()
+
+            Self::calculate_barycenter_weight(&neighbors, &ref_positions)
         });
     }
 
-    /// Aşama 3 — Doğrudan Kardeş İzolasyonu ve Merkezleme
-    ///
-    /// Birden fazla ebeveyni olan (merge) düğümler artık tek bir keyfi
-    /// ebeveynin altında "gizli yolcu" gibi taşınmıyor: onlar ve TÜM alt
-    /// ağaçları bağımsız bir blok olarak kendi içinde tidy-tree ile
-    /// yerleştirilip, sonra bir bütün halinde ebeveynlerinin ortasına
-    /// kaydırılıyor. Böylece:
-    ///   - Tek-ebeveynli kardeşler (ör. Kaza Namazlari, Vird, ...) artık
-    ///     birbirine eşit aralıklı kalır; aralarından biri, aşağıdaki dev
-    ///     bir merge alt-ağacını taşımak zorunda kalmaz.
-    ///   - Merge düğümünün kendi çocukları da (ör. Ev Bul'un altındaki
-    ///     Eksiksiz Rutin / Mahmud Efendi), merge düğümü ortalanırken
-    ///     ONUNLA BİRLİKTE kayar — asla ebeveynlerinden kopup sola/sağa
-    ///     yaslanmış görünmezler.
-    fn assign_coordinates(graph: &mut FocusGraph, ordered: &[Vec<Uuid>], frozen: &HashSet<Uuid>) {
-        const X_GAP: f32 = 60.0; // Doğrudan kardeş düğümler arası boşluk
-        const GROUP_GAP: f32 = 180.0; // Birbiriyle hiç bağlantısı olmayan kökler arası boşluk
-        const Y_GAP: f32 = 120.0;
-
-        // 1. Y Koordinatları Ataması
-        for (layer_idx, layer_nodes) in ordered.iter().enumerate() {
-            let y = layer_idx as f32 * (FocusNode::HEIGHT + Y_GAP);
-            for &id in layer_nodes {
-                if frozen.contains(&id) {
-                    continue;
-                }
-                if let Some(node) = graph.get_node_mut(id) {
-                    node.y = y;
-                }
-            }
-        }
-
-        // Düğümün hangi katmanda olduğunu hızlı bulmak için ters index.
-        let layer_of: HashMap<Uuid, usize> = ordered
+    fn build_position_map(layer: &[Uuid]) -> HashMap<Uuid, usize> {
+        layer
             .iter()
             .enumerate()
-            .flat_map(|(l, nodes)| nodes.iter().map(move |&id| (id, l)))
-            .collect();
+            .map(|(index, &id)| (id, index))
+            .collect()
+    }
 
-        // 2. Her düğüm için "bir önceki katmandaki gerçek ebeveynleri" bul.
-        //    Tam olarak TEK böyle ebeveyni olan düğümler normal ağaç
-        //    çocuğu sayılır (children_of_primary'ye eklenir). İKİ ya da
-        //    daha fazla (ya da hiç, nadir bir DAG kenar durumu) ebeveyni
-        //    olan düğümler "bağımsız" sayılır: hiçbir ebeveynin
-        //    subtree_width'ini şişirmezler, kendi bloklarını kendileri
-        //    oluşturup sonradan ortalanırlar (Aşama 6).
-        let mut primary_parent: HashMap<Uuid, Uuid> = HashMap::new();
-        let mut independent: Vec<Uuid> = Vec::new();
-
-        for layer_idx in 1..ordered.len() {
-            for &child in &ordered[layer_idx] {
-                let valid_parents: Vec<Uuid> = graph
-                    .parents_of(child)
-                    .into_iter()
-                    .filter(|p| layer_of.get(p) == Some(&(layer_idx - 1)))
-                    .collect();
-
-                if valid_parents.len() == 1 {
-                    primary_parent.insert(child, valid_parents[0]);
-                } else {
-                    // 0 (nadir kenar durumu) veya >=2 (gerçek merge) ebeveyn.
-                    independent.push(child);
-                }
-            }
+    fn calculate_barycenter_weight(
+        neighbors: &[Uuid],
+        pos_map: &HashMap<Uuid, usize>,
+    ) -> usize {
+        if neighbors.is_empty() {
+            return 0;
         }
 
-        // 3. Ebeveynlerin Çocuk Listeleri — SADECE tek-ebeveynli (normal)
-        //    düğümler ekleniyor; bağımsız/merge düğümler hiçbir listeye
-        //    girmiyor, dolayısıyla hiçbir kardeşin genişliğini şişirmiyor.
-        let mut children_of_primary: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
-        for layer_nodes in ordered {
-            for &id in layer_nodes {
-                if let Some(&parent) = primary_parent.get(&id) {
-                    children_of_primary.entry(parent).or_default().push(id);
-                }
-            }
-        }
-
-        // 4. Alt Ağaç Genişliği Hesabı (Piksel Cinsinden) — değişmedi.
-        fn subtree_width(
-            id: Uuid,
-            children_of: &HashMap<Uuid, Vec<Uuid>>,
-            memo: &mut HashMap<Uuid, f32>,
-            x_gap: f32,
-        ) -> f32 {
-            if let Some(&cached) = memo.get(&id) {
-                return cached;
-            }
-
-            let width = match children_of.get(&id) {
-                Some(children) if !children.is_empty() => {
-                    let children_sum: f32 = children
-                        .iter()
-                        .map(|&c| subtree_width(c, children_of, memo, x_gap))
-                        .sum();
-                    let gaps = (children.len() - 1) as f32 * x_gap;
-                    (children_sum + gaps).max(FocusNode::WIDTH)
-                }
-                _ => FocusNode::WIDTH,
-            };
-
-            memo.insert(id, width);
-            width
-        }
-
-        // 5. Recursive Yerleştirme — değişmedi. `positions` artık dışarıdan
-        //    verilen bir haritaya yazıyor ki hem ana gövde (Aşama A) hem de
-        //    her bağımsız merge bloğu (Aşama B) için tekrar kullanılabilsin.
-        fn place(
-            id: Uuid,
-            x_start: f32,
-            children_of: &HashMap<Uuid, Vec<Uuid>>,
-            memo: &mut HashMap<Uuid, f32>,
-            positions: &mut HashMap<Uuid, f32>,
-            x_gap: f32,
-        ) {
-            let children = children_of.get(&id).cloned().unwrap_or_default();
-
-            if children.is_empty() {
-                positions.insert(id, x_start);
-            } else {
-                let mut cursor = x_start;
-                let mut first_x = None;
-                let mut last_x = 0.0;
-
-                for &child in &children {
-                    let child_w = subtree_width(child, children_of, memo, x_gap);
-                    let child_x = cursor + (child_w / 2.0) - (FocusNode::WIDTH / 2.0);
-
-                    place(child, cursor, children_of, memo, positions, x_gap);
-
-                    first_x.get_or_insert(child_x);
-                    last_x = child_x;
-
-                    cursor += child_w + x_gap;
-                }
-
-                let parent_x = (first_x.unwrap() + last_x) / 2.0;
-                positions.insert(id, parent_x);
-            }
-        }
-
-        let mut memo: HashMap<Uuid, f32> = HashMap::new();
-        let mut positions: HashMap<Uuid, f32> = HashMap::new();
-
-        // 6a. Ana gövde: 0. katmandaki gerçek kökler, yan yana ve ortalanmış.
-        let top_level_roots: Vec<Uuid> = ordered.first().cloned().unwrap_or_default();
-
-        let total_width: f32 = top_level_roots
+        let position_sum: usize = neighbors
             .iter()
-            .map(|&root| subtree_width(root, &children_of_primary, &mut memo, X_GAP))
-            .sum::<f32>()
-            + ((top_level_roots.len().saturating_sub(1)) as f32 * GROUP_GAP);
+            .filter_map(|neighbor_id| pos_map.get(neighbor_id).copied())
+            .sum();
 
-        let mut cursor = -total_width / 2.0;
-        for &root in &top_level_roots {
-            let root_w = subtree_width(root, &children_of_primary, &mut memo, X_GAP);
-            place(
-                root,
-                cursor,
-                &children_of_primary,
-                &mut memo,
-                &mut positions,
-                X_GAP,
-            );
-            cursor += root_w + GROUP_GAP;
-        }
+        (position_sum * BARYCENTER_SCALE_FACTOR) / neighbors.len()
+    }
 
-        // 6b. Bağımsız/merge düğümler: katman sırasına göre (üsttekiler
-        //     önce) işleniyor ki bir düğümün ebeveynleri işlendiğinde
-        //     zaten kesinleşmiş x'e sahip olsunlar. Her biri önce KENDİ
-        //     alt ağacıyla birlikte yerel bir başlangıç noktasına (0.0)
-        //     göre tidy-tree ile diziliyor, sonra TÜM gerçek
-        //     ebeveynlerinin x'lerinin ortasına gelecek şekilde tüm alt
-        //     ağaç TEK BİR PARÇA halinde kaydırılıyor — çocuklar asla
-        //     ebeveynden kopmuyor.
-        let independent_by_layer: Vec<Uuid> = {
-            let want: HashSet<Uuid> = independent.into_iter().collect();
-            ordered
-                .iter()
-                .flatten()
-                .copied()
-                .filter(|id| want.contains(id))
-                .collect()
-        };
+    fn assign_coordinates(
+        graph: &mut FocusGraph,
+        ordered_layers: &[Vec<Uuid>],
+        frozen: &HashSet<Uuid>,
+    ) {
+        Self::assign_y_coordinates(graph, ordered_layers, frozen);
 
-        for id in independent_by_layer {
-            let mut local_positions: HashMap<Uuid, f32> = HashMap::new();
-            place(
-                id,
-                0.0,
-                &children_of_primary,
-                &mut memo,
-                &mut local_positions,
-                X_GAP,
-            );
-            let local_root_x = *local_positions.get(&id).unwrap_or(&0.0);
+        let layer_map = Self::build_node_layer_lookup(ordered_layers);
+        let (children_of_primary, independent_nodes) =
+            Self::classify_parent_relationships(graph, ordered_layers, &layer_map);
 
-            let parent_xs: Vec<f32> = graph
-                .parents_of(id)
-                .iter()
-                .filter_map(|p| positions.get(p).copied())
-                .collect();
+        let mut memoized_widths: HashMap<Uuid, f32> = HashMap::new();
+        let mut final_x_positions: HashMap<Uuid, f32> = HashMap::new();
 
-            let desired_x = if parent_xs.is_empty() {
-                local_root_x
-            } else {
-                let min_x = parent_xs.iter().cloned().fold(f32::INFINITY, f32::min);
-                let max_x = parent_xs.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
-                (min_x + max_x) / 2.0
-            };
+        Self::place_top_level_roots(
+            ordered_layers,
+            &children_of_primary,
+            &mut memoized_widths,
+            &mut final_x_positions,
+        );
 
-            let delta = desired_x - local_root_x;
+        Self::place_independent_merge_nodes(
+            graph,
+            ordered_layers,
+            &independent_nodes,
+            &children_of_primary,
+            &mut memoized_widths,
+            &mut final_x_positions,
+        );
 
-            for (node_id, local_x) in local_positions {
-                positions.insert(node_id, local_x + delta);
-            }
-        }
+        Self::apply_x_coordinates(graph, &final_x_positions, frozen);
+    }
 
-        // 7. Konumları Uygula
-        for (id, x_pos) in &positions {
-            if frozen.contains(id) {
-                continue;
-            }
-            if let Some(node) = graph.get_node_mut(*id) {
-                node.x = *x_pos;
+    fn assign_y_coordinates(
+        graph: &mut FocusGraph,
+        ordered_layers: &[Vec<Uuid>],
+        frozen: &HashSet<Uuid>,
+    ) {
+        for (layer_index, layer_nodes) in ordered_layers.iter().enumerate() {
+            let y_coord = layer_index as f32 * (FocusNode::HEIGHT + LAYER_Y_GAP);
+
+            for &node_id in layer_nodes {
+                if !frozen.contains(&node_id) {
+                    if let Some(node) = graph.get_node_mut(node_id) {
+                        node.y = y_coord;
+                    }
+                }
             }
         }
     }
+
+    fn build_node_layer_lookup(ordered_layers: &[Vec<Uuid>]) -> HashMap<Uuid, usize> {
+        ordered_layers
+            .iter()
+            .enumerate()
+            .flat_map(|(layer_idx, nodes)| nodes.iter().map(move |&id| (id, layer_idx)))
+            .collect()
+    }
+
+    fn classify_parent_relationships(
+        graph: &FocusGraph,
+        ordered_layers: &[Vec<Uuid>],
+        _layer_map: &HashMap<Uuid, usize>,
+    ) -> (HashMap<Uuid, Vec<Uuid>>, Vec<Uuid>) {
+        let mut primary_parents: HashMap<Uuid, Uuid> = HashMap::new();
+        let mut independent_nodes: Vec<Uuid> = Vec::new();
+
+        for layer_idx in 1..ordered_layers.len() {
+            for &child_id in &ordered_layers[layer_idx] {
+                let all_parents = graph.parents_of(child_id);
+
+                if all_parents.len() == 1 {
+                    primary_parents.insert(child_id, all_parents[0]);
+                } else if all_parents.len() > 1 {
+                    independent_nodes.push(child_id);
+                }
+            }
+        }
+
+        let mut children_of_primary: HashMap<Uuid, Vec<Uuid>> = HashMap::new();
+        for layer_nodes in ordered_layers {
+            for &node_id in layer_nodes {
+                if let Some(&parent_id) = primary_parents.get(&node_id) {
+                    children_of_primary
+                        .entry(parent_id)
+                        .or_default()
+                        .push(node_id);
+                }
+            }
+        }
+
+        (children_of_primary, independent_nodes)
+    }
+    fn place_top_level_roots(
+        ordered_layers: &[Vec<Uuid>],
+        children_of_primary: &HashMap<Uuid, Vec<Uuid>>,
+        memo: &mut HashMap<Uuid, f32>,
+        positions: &mut HashMap<Uuid, f32>,
+    ) {
+        let top_level_roots: Vec<Uuid> = ordered_layers.first().cloned().unwrap_or_default();
+        if top_level_roots.is_empty() {
+            return;
+        }
+
+        let total_trees_width = Self::calculate_total_roots_width(
+            &top_level_roots,
+            children_of_primary,
+            memo,
+        );
+
+        let mut start_cursor = -total_trees_width / CENTER_SPLIT_DIVISOR;
+        for &root_id in &top_level_roots {
+            let root_width = calculate_subtree_width(root_id, children_of_primary, memo);
+
+            recursive_place_node(
+                root_id,
+                start_cursor,
+                children_of_primary,
+                memo,
+                positions,
+            );
+
+            start_cursor += root_width + UNCONNECTED_GROUP_GAP;
+        }
+    }
+
+    fn calculate_total_roots_width(
+        roots: &[Uuid],
+        children_of_primary: &HashMap<Uuid, Vec<Uuid>>,
+        memo: &mut HashMap<Uuid, f32>,
+    ) -> f32 {
+        let width_sum: f32 = roots
+            .iter()
+            .map(|&root_id| calculate_subtree_width(root_id, children_of_primary, memo))
+            .sum();
+
+        let gaps_count = roots.len().saturating_sub(1) as f32;
+        width_sum + (gaps_count * UNCONNECTED_GROUP_GAP)
+    }
+
+    fn place_independent_merge_nodes(
+        graph: &FocusGraph,
+        ordered_layers: &[Vec<Uuid>],
+        independent_nodes: &[Uuid],
+        children_of_primary: &HashMap<Uuid, Vec<Uuid>>,
+        memo: &mut HashMap<Uuid, f32>,
+        positions: &mut HashMap<Uuid, f32>,
+    ) {
+        let sorted_independent = Self::sort_independent_by_topological_order(
+            ordered_layers,
+            independent_nodes,
+        );
+
+        for node_id in sorted_independent {
+            let mut local_positions: HashMap<Uuid, f32> = HashMap::new();
+
+            recursive_place_node(
+                node_id,
+                DEFAULT_ORIGIN_X,
+                children_of_primary,
+                memo,
+                &mut local_positions,
+            );
+
+            let local_root_x = *local_positions.get(&node_id).unwrap_or(&DEFAULT_ORIGIN_X);
+            let desired_center_x = Self::calculate_desired_parent_center(graph, node_id, positions, local_root_x);
+            let shift_delta = desired_center_x - local_root_x;
+
+            for (id, local_x) in local_positions {
+                positions.entry(id).or_insert(local_x + shift_delta);
+            }
+        }
+    }
+
+    fn sort_independent_by_topological_order(
+        ordered_layers: &[Vec<Uuid>],
+        independent_nodes: &[Uuid],
+    ) -> Vec<Uuid> {
+        let target_set: HashSet<Uuid> = independent_nodes.iter().copied().collect();
+
+        ordered_layers
+            .iter()
+            .flatten()
+            .copied()
+            .filter(|id| target_set.contains(id))
+            .collect()
+    }
+
+    fn calculate_desired_parent_center(
+        graph: &FocusGraph,
+        node_id: Uuid,
+        positions: &HashMap<Uuid, f32>,
+        fallback_x: f32,
+    ) -> f32 {
+        let parent_positions: Vec<f32> = graph
+            .parents_of(node_id)
+            .iter()
+            .filter_map(|parent_id| positions.get(parent_id).copied())
+            .collect();
+
+        if parent_positions.is_empty() {
+            fallback_x
+        } else {
+            let min_x = parent_positions.iter().cloned().fold(f32::INFINITY, f32::min);
+            let max_x = parent_positions.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            (min_x + max_x) / CENTER_SPLIT_DIVISOR
+        }
+    }
+
+    fn apply_x_coordinates(
+        graph: &mut FocusGraph,
+        positions: &HashMap<Uuid, f32>,
+        frozen: &HashSet<Uuid>,
+    ) {
+        for (&node_id, &x_coord) in positions {
+            if !frozen.contains(&node_id) {
+                if let Some(node) = graph.get_node_mut(node_id) {
+                    node.x = x_coord;
+                }
+            }
+        }
+    }
+}
+
+fn calculate_subtree_width(
+    node_id: Uuid,
+    children_of: &HashMap<Uuid, Vec<Uuid>>,
+    memo: &mut HashMap<Uuid, f32>,
+) -> f32 {
+    if let Some(&cached_width) = memo.get(&node_id) {
+        return cached_width;
+    }
+
+    let calculated_width = match children_of.get(&node_id) {
+        Some(children) if !children.is_empty() => {
+            let children_width_sum: f32 = children
+                .iter()
+                .map(|&child_id| calculate_subtree_width(child_id, children_of, memo))
+                .sum();
+
+            let gaps_total = (children.len() - 1) as f32 * SIBLING_X_GAP;
+            (children_width_sum + gaps_total).max(FocusNode::WIDTH)
+        }
+        _ => FocusNode::WIDTH,
+    };
+
+    memo.insert(node_id, calculated_width);
+    calculated_width
+}
+
+fn recursive_place_node(
+    node_id: Uuid,
+    x_start: f32,
+    children_of: &HashMap<Uuid, Vec<Uuid>>,
+    memo: &mut HashMap<Uuid, f32>,
+    positions: &mut HashMap<Uuid, f32>,
+) {
+    let children = children_of.get(&node_id).cloned().unwrap_or_default();
+
+    if children.is_empty() {
+        positions.insert(node_id, x_start);
+        return;
+    }
+
+    let (first_child_x, last_child_x) = place_child_nodes(
+        &children,
+        x_start,
+        children_of,
+        memo,
+        positions,
+    );
+
+    let centered_parent_x = (first_child_x + last_child_x) / CENTER_SPLIT_DIVISOR;
+    positions.insert(node_id, centered_parent_x);
+}
+
+fn place_child_nodes(
+    children: &[Uuid],
+    start_x: f32,
+    children_of: &HashMap<Uuid, Vec<Uuid>>,
+    memo: &mut HashMap<Uuid, f32>,
+    positions: &mut HashMap<Uuid, f32>,
+) -> (f32, f32) {
+    let mut cursor = start_x;
+    let mut first_child_x = None;
+    let mut last_child_x = 0.0;
+
+    for &child_id in children {
+        let child_width = calculate_subtree_width(child_id, children_of, memo);
+        let child_centered_x = cursor + (child_width / CENTER_SPLIT_DIVISOR) - (FocusNode::WIDTH / CENTER_SPLIT_DIVISOR);
+
+        recursive_place_node(child_id, cursor, children_of, memo, positions);
+
+        if first_child_x.is_none() {
+            first_child_x = Some(child_centered_x);
+        }
+        last_child_x = child_centered_x;
+
+        cursor += child_width + SIBLING_X_GAP;
+    }
+
+    (first_child_x.unwrap_or(start_x), last_child_x)
 }
