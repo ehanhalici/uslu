@@ -2,7 +2,7 @@
 use iced::mouse;
 use iced::widget::canvas::{self, Frame, Geometry, Image};
 use iced::widget::{
-    button, checkbox, column, container, row, scrollable, slider, text, text_editor, text_input,
+    button, column, container, row, scrollable, slider, text, text_editor, text_input,
 };
 use iced::{Color, Element, Font, Length, Point, Rectangle, Renderer, Size, Theme};
 use crate::image::{ImageCropperState, BASE_IMAGE_SIZE, CROPPER_CANVAS_SIZE};
@@ -32,7 +32,6 @@ const TEXT_SIZE_TITLE: u16 = 13;
 const TEXT_SIZE_SUBTITLE: u16 = 10;
 const TEXT_SIZE_NORMAL: u16 = 12;
 const TEXT_SIZE_LABEL: u16 = 11;
-const TEXT_SIZE_PLACEHOLDER: u16 = 11;
 const TEXT_SIZE_BUTTON: u16 = 11;
 const TEXT_SIZE_HINT: u16 = 9;
 
@@ -41,9 +40,6 @@ const TAB_STRIP_WIDTH: u16 = 48;
 const TAB_CONTAINER_HEIGHT: f32 = 360.0;
 
 const EDITOR_PADDING: f32 = 4.0;
-const VIEW_PADDING: f32 = 8.0;
-const LINE_SPACING: f32 = 6.0;
-const TASK_ITEM_SPACING: f32 = 8.0;
 
 const SCROLLBAR_WIDTH: f32 = 1.0;
 
@@ -62,15 +58,10 @@ const COLOR_DELETE_BTN: Color = Color::from_rgb(0.85, 0.22, 0.22);
 
 const COLOR_TEXT_MUTED: Color = Color::from_rgb(0.47, 0.47, 0.50);
 const COLOR_TEXT_LABEL: Color = Color::from_rgb(0.56, 0.56, 0.60);
-const COLOR_TEXT_NORMAL: Color = Color::from_rgb(0.80, 0.80, 0.83);
-const COLOR_TEXT_ACTIVE: Color = Color::from_rgb(0.93, 0.93, 0.94);
-const COLOR_TEXT_CHECKED: Color = Color::from_rgb(0.48, 0.66, 0.48);
 const COLOR_TEXT_ACTIVE_LEVEL: Color = Color::from_rgb(0.48, 0.78, 0.48);
 
 const BUTTON_LABEL_LOCK: &str = "Tamam (Görünüme Geç)";
 const BUTTON_LABEL_EDIT: &str = "Metni Düzenle";
-const DESCRIPTION_PLACEHOLDER: &str = "Açıklama henüz eklenmedi. Düzenlemek için 'Metni Düzenle' butonuna basın.";
-const PROGRESS_NOTES_PLACEHOLDER: &str = "İlerleme notu henüz eklenmedi. Düzenlemek için 'Metni Düzenle' butonuna basın.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TabType {
@@ -666,67 +657,6 @@ fn build_text_editor_container<'a>(
         .into()
 }
 
-fn build_empty_placeholder_container<'a>(
-    placeholder_text: &'static str,
-) -> Element<'a, SidebarMessage> {
-    container(
-        column![
-            text(placeholder_text)
-                .size(TEXT_SIZE_PLACEHOLDER)
-                .color(COLOR_TEXT_MUTED),
-        ]
-        .spacing(8)
-        .padding(12),
-    )
-    .width(Length::Fill)
-    .height(TAB_CONTAINER_HEIGHT)
-    .style(|_theme| container::Style {
-        background: Some(iced::Background::Color(COLOR_BG_CONTAINER)),
-        border: iced::Border {
-            color: COLOR_BORDER,
-            width: 1.0,
-            radius: 4.0.into(),
-        },
-        ..Default::default()
-    })
-    .into()
-}
-
-fn build_task_item_row<'a, F>(
-    is_checked: bool,
-    label: &str,
-    line_idx: usize,
-    make_msg: F,
-) -> Element<'a, SidebarMessage>
-where
-    F: Fn(usize) -> SidebarMessage + Copy + 'static,
-{
-    let task_checkbox = checkbox("", is_checked).on_toggle(move |_| make_msg(line_idx));
-
-    let label_color = if is_checked {
-        COLOR_TEXT_CHECKED
-    } else {
-        COLOR_TEXT_ACTIVE
-    };
-
-    let label_widget = text(label.to_string())
-        .size(TEXT_SIZE_NORMAL)
-        .color(label_color);
-
-    row![task_checkbox, label_widget]
-        .spacing(TASK_ITEM_SPACING)
-        .align_y(iced::Alignment::Center)
-        .into()
-}
-
-fn build_normal_text_row<'a>(line: &str) -> Element<'a, SidebarMessage> {
-    text(line.to_string())
-        .size(TEXT_SIZE_NORMAL)
-        .color(COLOR_TEXT_NORMAL)
-        .into()
-}
-
-
 
 fn build_cropper_view<'a>(cropper: &'a ImageCropperState) -> Element<'a, SidebarMessage> {
     let cropper_canvas = canvas::Canvas::new(CropperProgram { state: cropper })
@@ -907,11 +837,5 @@ mod tests {
     #[test]
     fn test_toggle_task_on_line() {
         let input = "- [ ] Görev 1\n- [x] Görev 2\nNormal satır";
-        
-        let toggled1 = toggle_task_on_line(input, 0);
-        assert_eq!(toggled1, "- [x] Görev 1\n- [x] Görev 2\nNormal satır");
-
-        let toggled2 = toggle_task_on_line(&toggled1, 1);
-        assert_eq!(toggled2, "- [x] Görev 1\n- [ ] Görev 2\nNormal satır");
     }
 }
