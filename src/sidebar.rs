@@ -8,6 +8,7 @@ use iced::{Color, Element, Font, Length, Point, Rectangle, Renderer, Size, Theme
 use crate::image::{ImageCropperState, BASE_IMAGE_SIZE, CROPPER_CANVAS_SIZE};
 use crate::models::{FocusNode, NodeStatus};
 use uuid::Uuid;
+use crate::notebox::{NoteBoxMessage, NoteBoxState, NoteBoxView};
 
 pub const MATERIAL_FONT: Font = Font {
     family: iced::font::Family::Name("Material Symbols Outlined"),
@@ -106,10 +107,7 @@ pub enum SidebarMessage {
 
     DescriptionAction(text_editor::Action),
     ProgressNotesAction(text_editor::Action),
-
-    ToggleDescriptionTask(usize),
-    ToggleProgressNotesTask(usize),
-
+    
     OpenImagePicker,
     CropZoomChanged(f32),
     CropPanMoved { delta_x: f32, delta_y: f32 },
@@ -118,6 +116,9 @@ pub enum SidebarMessage {
 
     ToggleEditing,
     MaxLevelSliderChanged(usize),
+
+    DescriptionNoteBox(NoteBoxMessage),
+    ProgressNotesNoteBox(NoteBoxMessage),
 
     ToggleTab(TabType),
     AddNode,
@@ -132,6 +133,8 @@ pub struct NodeForm {
     pub progress: f32,
     pub description_editor: text_editor::Content,
     pub progress_notes_editor: text_editor::Content,
+    pub description_notebox_state: NoteBoxState,
+    pub progress_notes_notebox_state: NoteBoxState,
 }
 
 impl Clone for NodeForm {
@@ -144,6 +147,8 @@ impl Clone for NodeForm {
             progress_notes_editor: text_editor::Content::with_text(
                 &self.progress_notes_editor.text(),
             ),
+            description_notebox_state: self.description_notebox_state.clone(),
+            progress_notes_notebox_state: self.progress_notes_notebox_state.clone(),
         }
     }
 }
@@ -156,6 +161,9 @@ impl Default for NodeForm {
             progress: 0.0,
             description_editor: text_editor::Content::new(),
             progress_notes_editor: text_editor::Content::new(),
+            description_notebox_state: NoteBoxState::default(),
+            progress_notes_notebox_state: NoteBoxState::default(),
+
         }
     }
 }
@@ -168,6 +176,8 @@ impl NodeForm {
             progress: node.status.progress,
             description_editor: text_editor::Content::with_text(&node.description),
             progress_notes_editor: text_editor::Content::with_text(&node.progress_notes),
+            description_notebox_state: NoteBoxState::default(),
+            progress_notes_notebox_state: NoteBoxState::default(),
         }
     }
 
@@ -186,6 +196,13 @@ impl NodeForm {
     }
 
     pub fn get_progress_notes_text(&self) -> String {
+        self.progress_notes_editor.text()
+    }
+    pub fn description_text(&self) -> String {
+        self.description_editor.text()
+    }
+
+    pub fn progress_notes_text(&self) -> String {
         self.progress_notes_editor.text()
     }
 }
@@ -473,11 +490,11 @@ fn build_description_tab_content<'a>(
             SidebarMessage::DescriptionAction,
         )
     } else {
-        render_formatted_markdown_view(
+        NoteBoxView::render_viewer(
             &form.get_description_text(),
-            DESCRIPTION_PLACEHOLDER,
-            SidebarMessage::ToggleDescriptionTask,
+            &form.description_notebox_state,
         )
+        .map(SidebarMessage::DescriptionNoteBox)
     };
 
     column![row![header_button].padding(2), content_view]
@@ -497,11 +514,11 @@ fn build_progress_notes_tab_content<'a>(
             SidebarMessage::ProgressNotesAction,
         )
     } else {
-        render_formatted_markdown_view(
+        NoteBoxView::render_viewer(
             &form.get_progress_notes_text(),
-            PROGRESS_NOTES_PLACEHOLDER,
-            SidebarMessage::ToggleProgressNotesTask,
+            &form.progress_notes_notebox_state,
         )
+        .map(SidebarMessage::ProgressNotesNoteBox)
     };
 
     column![row![header_button].padding(2), content_view]
@@ -649,46 +666,6 @@ fn build_text_editor_container<'a>(
         .into()
 }
 
-fn render_formatted_markdown_view<'a, F>(
-    raw_text: &str,
-    empty_placeholder: &'static str,
-    make_msg: F,
-) -> Element<'a, SidebarMessage>
-where
-    F: Fn(usize) -> SidebarMessage + Copy + 'static,
-{
-    if raw_text.trim().is_empty() {
-        return build_empty_placeholder_container(empty_placeholder);
-    }
-
-    let line_list = build_markdown_line_list(raw_text, make_msg);
-
-    let thin_scrollbar = scrollable::Scrollbar::new()
-        .width(SCROLLBAR_WIDTH)
-        .margin(0.0)
-        .scroller_width(SCROLLBAR_WIDTH);
-
-    let scrollable_view = scrollable(line_list.padding(VIEW_PADDING))
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .direction(scrollable::Direction::Vertical(thin_scrollbar))
-        .style(custom_thin_scrollbar_style);
-
-    container(scrollable_view)
-        .width(Length::Fill)
-        .height(TAB_CONTAINER_HEIGHT)
-        .style(|_theme| container::Style {
-            background: Some(iced::Background::Color(COLOR_BG_CONTAINER)),
-            border: iced::Border {
-                color: COLOR_BORDER,
-                width: 1.0,
-                radius: 4.0.into(),
-            },
-            ..Default::default()
-        })
-        .into()
-}
-
 fn build_empty_placeholder_container<'a>(
     placeholder_text: &'static str,
 ) -> Element<'a, SidebarMessage> {
@@ -713,33 +690,6 @@ fn build_empty_placeholder_container<'a>(
         ..Default::default()
     })
     .into()
-}
-
-fn build_markdown_line_list<'a, F>(
-    raw_text: &str,
-    make_msg: F,
-) -> iced::widget::Column<'a, SidebarMessage>
-where
-    F: Fn(usize) -> SidebarMessage + Copy + 'static,
-{
-    let mut line_list = column![].spacing(LINE_SPACING);
-
-    for (line_idx, line) in raw_text.lines().enumerate() {
-        if line.trim().is_empty() {
-            line_list = line_list.push(container(text("")).height(4));
-            continue;
-        }
-
-        if let Some((is_checked, label)) = parse_task_line(line) {
-            let task_row = build_task_item_row(is_checked, label, line_idx, make_msg);
-            line_list = line_list.push(task_row);
-        } else {
-            let normal_line = build_normal_text_row(line);
-            line_list = line_list.push(normal_line);
-        }
-    }
-
-    line_list
 }
 
 fn build_task_item_row<'a, F>(
@@ -776,62 +726,7 @@ fn build_normal_text_row<'a>(line: &str) -> Element<'a, SidebarMessage> {
         .into()
 }
 
-pub fn toggle_task_on_line(text: &str, line_idx: usize) -> String {
-    let lines: Vec<&str> = text.lines().collect();
-    if line_idx >= lines.len() {
-        return text.to_string();
-    }
 
-    let mut new_lines = Vec::with_capacity(lines.len());
-    for (i, line) in lines.iter().enumerate() {
-        if i == line_idx {
-            let line_str = *line;
-            let toggled = if line_str.contains("- [ ]") {
-                line_str.replacen("- [ ]", "- [x]", 1)
-            } else if line_str.contains("- [x]") {
-                line_str.replacen("- [x]", "- [ ]", 1)
-            } else if line_str.contains("- [X]") {
-                line_str.replacen("- [X]", "- [ ]", 1)
-            } else if line_str.contains("[ ]") {
-                line_str.replacen("[ ]", "[x]", 1)
-            } else if line_str.contains("[x]") {
-                line_str.replacen("[x]", "[ ]", 1)
-            } else if line_str.contains("[X]") {
-                line_str.replacen("[X]", "[ ]", 1)
-            } else {
-                line_str.to_string()
-            };
-            new_lines.push(toggled);
-        } else {
-            new_lines.push(line.to_string());
-        }
-    }
-
-    let mut result = new_lines.join("\n");
-    if text.ends_with('\n') {
-        result.push('\n');
-    }
-    result
-}
-
-fn parse_task_line(line: &str) -> Option<(bool, &str)> {
-    let trimmed = line.trim_start();
-    if let Some(rest) = trimmed.strip_prefix("- [ ]") {
-        Some((false, rest.trim_start()))
-    } else if let Some(rest) = trimmed.strip_prefix("- [x]") {
-        Some((true, rest.trim_start()))
-    } else if let Some(rest) = trimmed.strip_prefix("- [X]") {
-        Some((true, rest.trim_start()))
-    } else if let Some(rest) = trimmed.strip_prefix("[ ]") {
-        Some((false, rest.trim_start()))
-    } else if let Some(rest) = trimmed.strip_prefix("[x]") {
-        Some((true, rest.trim_start()))
-    } else if let Some(rest) = trimmed.strip_prefix("[X]") {
-        Some((true, rest.trim_start()))
-    } else {
-        None
-    }
-}
 
 fn build_cropper_view<'a>(cropper: &'a ImageCropperState) -> Element<'a, SidebarMessage> {
     let cropper_canvas = canvas::Canvas::new(CropperProgram { state: cropper })

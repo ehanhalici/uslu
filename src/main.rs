@@ -6,18 +6,19 @@ use std::time::{Duration, Instant};
 
 use uslu::canvas::{CanvasData, CanvasMessage, Viewport};
 use uslu::image::{ImageCropperState, ImageManager};
-use uslu::markdown::MarkdownIO;
+use uslu::orgmode::OrgmodeIO;
 use uslu::models::{FocusGraph, FocusNode};
 use uslu::sidebar::{self, NodeForm, SidebarMessage, TabType};
 use uslu::sugiyama::SugiyamaEngine;
 use uuid::Uuid;
+use uslu::notebox::{OrgFormatter, NoteBoxMessage};
 
 const APP_TITLE: &str = "Uslu — Focus Tree";
 const APP_WINDOW_WIDTH: f32 = 1280.0;
 const APP_WINDOW_HEIGHT: f32 = 800.0;
 
-const DEFAULT_TREE_FILE_PATH: &str = "tree.md";
-const DEFAULT_IMAGES_FILE_PATH: &str = "images.md";
+const DEFAULT_TREE_FILE_PATH: &str = "tree.org";
+const DEFAULT_IMAGES_FILE_PATH: &str = "images.org";
 
 const AUTOSAVE_INTERVAL_SECS: u64 = 60;
 const PERIODIC_TICK_SECS: u64 = 1;
@@ -75,7 +76,7 @@ impl Default for Uslu {
         let mut frozen = HashSet::new();
 
         if std::path::Path::new(&file_path).exists() {
-            if let Ok(imported_graph) = MarkdownIO::import(&file_path) {
+            if let Ok(imported_graph) = OrgmodeIO::import(&file_path) {
                 graph = imported_graph;
                 for node in &graph.nodes {
                     if node.is_frozen {
@@ -342,18 +343,6 @@ impl Uslu {
                     self.auto_sync_selected();
                 }
             }
-            SidebarMessage::ToggleDescriptionTask(line_idx) => {
-                let current_text = self.form.get_description_text();
-                let new_text = sidebar::toggle_task_on_line(&current_text, line_idx);
-                self.form.description_editor = iced::widget::text_editor::Content::with_text(&new_text);
-                self.auto_sync_selected();
-            }
-            SidebarMessage::ToggleProgressNotesTask(line_idx) => {
-                let current_text = self.form.get_progress_notes_text();
-                let new_text = sidebar::toggle_task_on_line(&current_text, line_idx);
-                self.form.progress_notes_editor = iced::widget::text_editor::Content::with_text(&new_text);
-                self.auto_sync_selected();
-            }
 
             SidebarMessage::OpenImagePicker => {
                 if self.is_editing_enabled || self.selected.is_none() {
@@ -380,6 +369,45 @@ impl Uslu {
             SidebarMessage::AddNode => self.spawn_new_node_at_viewport(),
             SidebarMessage::DeleteSelected => self.delete_selected_node(),
             SidebarMessage::ResetView => self.reset_layout_and_view(),
+            SidebarMessage::DescriptionNoteBox(note_msg) => {
+                match note_msg {
+                    NoteBoxMessage::EditorActionPerformed(action) => {
+                        self.form.description_editor.perform(action);
+                        self.auto_sync_selected();
+                    }
+                    NoteBoxMessage::HeaderFoldToggled(line_idx) => {
+                        if !self.form.description_notebox_state.collapsed_line_indices.remove(&line_idx) {
+                            self.form.description_notebox_state.collapsed_line_indices.insert(line_idx);
+                        }
+                    }
+                    NoteBoxMessage::TaskStateToggled(line_idx) => {
+                        let current_text = self.form.get_description_text();
+                        let updated_text = OrgFormatter::toggle_task_state_at_line(&current_text, line_idx);
+                        self.form.description_editor = iced::widget::text_editor::Content::with_text(&updated_text);
+                        self.auto_sync_selected();
+                    }
+                }
+            }
+
+            SidebarMessage::ProgressNotesNoteBox(note_msg) => {
+                match note_msg {
+                    NoteBoxMessage::EditorActionPerformed(action) => {
+                        self.form.progress_notes_editor.perform(action);
+                        self.auto_sync_selected();
+                    }
+                    NoteBoxMessage::HeaderFoldToggled(line_idx) => {
+                        if !self.form.progress_notes_notebox_state.collapsed_line_indices.remove(&line_idx) {
+                            self.form.progress_notes_notebox_state.collapsed_line_indices.insert(line_idx);
+                        }
+                    }
+                    NoteBoxMessage::TaskStateToggled(line_idx) => {
+                        let current_text = self.form.get_progress_notes_text();
+                        let updated_text = OrgFormatter::toggle_task_state_at_line(&current_text, line_idx);
+                        self.form.progress_notes_editor = iced::widget::text_editor::Content::with_text(&updated_text);
+                        self.auto_sync_selected();
+                    }
+                }
+            }
         }
         Task::none()
     }
@@ -503,7 +531,7 @@ impl Uslu {
     fn save_to_disk(&mut self) {
         self.cleanup_orphan_images();
 
-        if let Err(err) = MarkdownIO::export(&self.graph, &self.file_path) {
+        if let Err(err) = OrgmodeIO::export(&self.graph, &self.file_path) {
             eprintln!("Otomatik Kaydetme Hatası: {}", err);
         } else {
             self.is_dirty = false;

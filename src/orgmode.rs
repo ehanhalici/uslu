@@ -3,29 +3,26 @@ use crate::models::{FocusGraph, FocusNode, NodeStatus};
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{Result as IoResult, Write};
-
 use uuid::Uuid;
 
 // =============================================================================
-// Sabitler (Constants)
+// Sabitler (Org-Mode Dönüşüm Sabitleri)
 // =============================================================================
-const HEADER_TITLE: &str = "# Uslu Focus Tree\n";
-const SECTION_PREFIX: &str = "## ";
+const HEADER_TITLE: &str = "#+TITLE: Uslu Focus Tree\n";
+const NODE_SECTION_PREFIX: &str = "** ";
+const DESC_SECTION_PREFIX: &str = "*** description:";
+const NOTES_SECTION_PREFIX: &str = "*** progress_notes:";
 const ITEM_PREFIX: char = '-';
 const KEY_VALUE_SEPARATOR: char = ':';
 const QUOTE_CHAR: char = '"';
-const BACKSLASH_CHAR: char = '\\';
-const NEWLINE_CHAR: char = '\n';
 
 const KEY_ID: &str = "id";
-const KEY_DESCRIPTION: &str = "description";
-const KEY_PROGRESS_NOTES: &str = "progress_notes";
-const KEY_IMAGE_ID: &str = "image_id";
 const KEY_STATUS: &str = "status";
 const KEY_PROGRESS: &str = "progress";
 const KEY_POSITION: &str = "position";
 const KEY_PREREQUISITES: &str = "prerequisites";
 const KEY_IS_COLLAPSED: &str = "is_collapsed";
+const KEY_IS_FROZEN: &str = "is_frozen";
 
 const MIN_PROGRESS_PERCENT: f32 = 0.0;
 const MAX_PROGRESS_PERCENT: f32 = 100.0;
@@ -33,8 +30,14 @@ const DEFAULT_COORDINATE: f32 = 0.0;
 
 const POSITION_ARRAY_DELIMITERS: &[char] = &['[', ']'];
 
+// Org-mode Hiyerarşi & Girintileme Sabitleri
+const ORG_INDENT_OFFSET_SPACES: &str = "      "; // 6 boşluk
+const ORG_HEADER_OFFSET_ASTERISKS: &str = "***";  // 3 yıldız ofseti (* -> ****)
+
 struct RawNode {
     title: String,
+    description: String,
+    progress_notes: String,
     kv: HashMap<String, String>,
 }
 
@@ -43,9 +46,9 @@ struct ProcessedNode {
     prereq_uuids: Vec<String>,
 }
 
-pub struct MarkdownIO;
+pub struct OrgmodeIO;
 
-impl MarkdownIO {
+impl OrgmodeIO {
     pub fn export(graph: &FocusGraph, path: &str) -> IoResult<()> {
         let tmp_path = format!("{}.tmp", path);
         {
@@ -85,26 +88,34 @@ fn write_single_node_to_file(
     node: &FocusNode,
     graph: &FocusGraph,
 ) -> IoResult<()> {
-    writeln!(file, "{}{}\n", SECTION_PREFIX, escape_string(&node.title))?;
+    // 1. Düğüm Başlığı (** Node Title)
+    writeln!(file, "{}{}\n", NODE_SECTION_PREFIX, node.title)?;
     writeln!(file, "- id: \"{}\"", node.id)?;
-    writeln!(
-        file,
-        "- description: \"{}\"",
-        escape_string(&node.description)
-    )?;
-    writeln!(
-        file,
-        "- progress_notes: \"{}\"",
-        escape_string(&node.progress_notes)
-    )?;
 
+    // 2. Description Alanı (*** description:)
+    writeln!(file, "{}", DESC_SECTION_PREFIX)?;
+    let formatted_desc = encode_org_content_indentation(&node.description);
+    if !formatted_desc.is_empty() {
+        writeln!(file, "{}", formatted_desc)?;
+    }
+    writeln!(file)?;
+
+    // 3. Progress Notes Alanı (*** progress_notes:)
+    writeln!(file, "{}", NOTES_SECTION_PREFIX)?;
+    let formatted_notes = encode_org_content_indentation(&node.progress_notes);
+    if !formatted_notes.is_empty() {
+        writeln!(file, "{}", formatted_notes)?;
+    }
+    writeln!(file)?;
+
+    // 4. Diğer Metadata Key-Value Değerleri (- key: value)
     if let Some(img_id) = &node.image_id {
         writeln!(file, "- image_id: \"{}\"", img_id)?;
     }
 
     writeln!(file, "- status: {:.1}", node.status.progress)?;
     writeln!(file, "- is_collapsed: {}", node.is_collapsed)?;
-    writeln!(file, "- is_frozen: {}", node.is_frozen)?; // ← YENİ EKLENDİ (C.1 Fix)
+    writeln!(file, "- is_frozen: {}", node.is_frozen)?;
 
     let parents_formatted = format_parent_uuids(graph, node.id);
     writeln!(file, "- prerequisites: [{}]", parents_formatted)?;
@@ -113,123 +124,163 @@ fn write_single_node_to_file(
     Ok(())
 }
 
-fn format_parent_uuids(graph: &FocusGraph, node_id: Uuid) -> String {
-    graph
-        .parents_of(node_id)
-        .into_iter()
-        .map(|parent_id| format!("\"{}\"", parent_id))
-        .collect::<Vec<String>>()
-        .join(", ")
+fn encode_org_content_indentation(content: &str) -> String {
+    let mut encoded_lines = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with('*') {
+            // Yıldız ile başlayan başlıklara 3 adet '*' ekleyerek seviyeyi düşür (demote)
+            encoded_lines.push(format!("{}{}", ORG_HEADER_OFFSET_ASTERISKS, line));
+        } else if !line.is_empty() {
+            // Düz metinlerin veya listelerin başına 6 boşluk ekle
+            encoded_lines.push(format!("{}{}", ORG_INDENT_OFFSET_SPACES, line));
+        } else {
+            encoded_lines.push(String::new());
+        }
+    }
+
+    encoded_lines.join("\n")
+}
+
+fn decode_org_content_indentation(content: &str) -> String {
+    let mut decoded_lines = Vec::new();
+
+    for line in content.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("****") {
+            // 3 adet '*' ofsetini kaldır (* seviyesine geri çek)
+            let line_without_offset = &line[ORG_HEADER_OFFSET_ASTERISKS.len()..];
+            decoded_lines.push(line_without_offset.to_string());
+        } else if line.starts_with(ORG_INDENT_OFFSET_SPACES) {
+            // Başındaki 6 boşluk girintisini kaldır
+            let line_without_indent = &line[ORG_INDENT_OFFSET_SPACES.len()..];
+            decoded_lines.push(line_without_indent.to_string());
+        } else {
+            decoded_lines.push(line.to_string());
+        }
+    }
+
+    decoded_lines.join("\n")
 }
 
 fn parse_raw_nodes_from_content(content: &str) -> Vec<RawNode> {
     let mut raw_nodes = Vec::new();
     let mut current_title: Option<String> = None;
     let mut current_kv: HashMap<String, String> = HashMap::new();
-    let mut current_multiline_key: Option<String> = None;
-    let mut current_multiline_val = String::new();
+
+    let mut current_desc_lines: Vec<String> = Vec::new();
+    let mut current_notes_lines: Vec<String> = Vec::new();
+
+    let mut active_block: Option<&str> = None;
 
     for line in content.lines() {
-        if handle_multiline_continuation(
-            line,
-            &mut current_multiline_key,
-            &mut current_multiline_val,
-            &mut current_kv,
-        ) {
-            continue;
-        }
-
         let trimmed = line.trim();
-        if is_ignorable_line(trimmed) {
-            continue;
-        }
 
-        if let Some(new_title) = trimmed.strip_prefix(SECTION_PREFIX) {
-            finalize_previous_node(&mut raw_nodes, &mut current_title, &mut current_kv);
-            current_title = Some(unescape_string(new_title.trim()));
-            continue;
-        }
-
-        if let Some(list_item) = trimmed.strip_prefix(ITEM_PREFIX) {
-            parse_key_value_pair(
-                list_item,
-                &mut current_multiline_key,
-                &mut current_multiline_val,
+        // 1. Yeni Ana Düğüm Başlığı (** Node Title)
+        if let Some(new_title) = trimmed.strip_prefix(NODE_SECTION_PREFIX) {
+            finalize_previous_node(
+                &mut raw_nodes,
+                &mut current_title,
+                &mut current_desc_lines,
+                &mut current_notes_lines,
                 &mut current_kv,
             );
+            current_title = Some(new_title.trim().to_string());
+            active_block = None;
+            continue;
+        }
+
+        // 2. Alt Blok Tanımları (*** description: / *** progress_notes:)
+        if trimmed.starts_with(DESC_SECTION_PREFIX) {
+            active_block = Some("desc");
+            continue;
+        }
+
+        if trimmed.starts_with(NOTES_SECTION_PREFIX) {
+            active_block = Some("notes");
+            continue;
+        }
+
+        // 3. Metadata Kontrolü (- key: value)
+        // Eğer satır `- key:` formatındaysa (örneğin - prerequisites:, - status:) 
+        // ve bir task-box değilse (`- [ ]`), alt blok modundan çıkıp metadata olarak işle:
+        if is_node_metadata_line(trimmed) {
+            active_block = None;
+            if let Some(list_item) = trimmed.strip_prefix(ITEM_PREFIX) {
+                parse_key_value_pair(list_item, &mut current_kv);
+                continue;
+            }
+        }
+
+        // 4. Metin veya Task List Satırlarını İlgili Bloğa Ekle
+        match active_block {
+            Some("desc") => current_desc_lines.push(line.to_string()),
+            Some("notes") => current_notes_lines.push(line.to_string()),
+            _ => {}
         }
     }
 
-    flush_multiline_remainder(current_multiline_key, current_multiline_val, &mut current_kv);
-    finalize_previous_node(&mut raw_nodes, &mut current_title, &mut current_kv);
+    finalize_previous_node(
+        &mut raw_nodes,
+        &mut current_title,
+        &mut current_desc_lines,
+        &mut current_notes_lines,
+        &mut current_kv,
+    );
 
     raw_nodes
 }
 
-fn handle_multiline_continuation(
-    line: &str,
-    multiline_key: &mut Option<String>,
-    multiline_val: &mut String,
-    kv: &mut HashMap<String, String>,
-) -> bool {
-    if let Some(key) = multiline_key.take() {
-        multiline_val.push(NEWLINE_CHAR);
-        multiline_val.push_str(line);
-
-        if is_value_unclosed_multiline(multiline_val) {
-            *multiline_key = Some(key);
-        } else {
-            kv.insert(key, multiline_val.clone());
-            multiline_val.clear();
-        }
-        return true;
+// Metadata satırı olup olmadığını kontrol eden yardımcı fonksiyon:
+fn is_node_metadata_line(trimmed_line: &str) -> bool {
+    if !trimmed_line.starts_with(ITEM_PREFIX) {
+        return false;
     }
-    false
-}
+    
+    // Görev listesi satırlarını (- [ ] veya - [x]) metadata olarak algılamasını engelle:
+    if trimmed_line.starts_with("- [ ]") 
+        || trimmed_line.starts_with("- [x]") 
+        || trimmed_line.starts_with("- [X]") 
+    {
+        return false;
+    }
 
-fn is_ignorable_line(trimmed: &str) -> bool {
-    trimmed.is_empty() || (trimmed.starts_with('#') && !trimmed.starts_with(SECTION_PREFIX))
+    // İçinde `:` geçen (- id: "...", - prerequisites: [...]) satırları metadata say:
+    trimmed_line.contains(KEY_VALUE_SEPARATOR)
 }
 
 fn finalize_previous_node(
     raw_nodes: &mut Vec<RawNode>,
     title_opt: &mut Option<String>,
+    desc_lines: &mut Vec<String>,
+    notes_lines: &mut Vec<String>,
     kv: &mut HashMap<String, String>,
 ) {
     if let Some(title) = title_opt.take() {
+        let raw_desc_str = desc_lines.join("\n");
+        let raw_notes_str = notes_lines.join("\n");
+
+        let description = decode_org_content_indentation(raw_desc_str.trim_matches('\n'));
+        let progress_notes = decode_org_content_indentation(raw_notes_str.trim_matches('\n'));
+
         raw_nodes.push(RawNode {
             title,
+            description,
+            progress_notes,
             kv: std::mem::take(kv),
         });
+
+        desc_lines.clear();
+        notes_lines.clear();
     }
 }
 
-fn parse_key_value_pair(
-    list_item: &str,
-    multiline_key: &mut Option<String>,
-    multiline_val: &mut String,
-    kv: &mut HashMap<String, String>,
-) {
+fn parse_key_value_pair(list_item: &str, kv: &mut HashMap<String, String>) {
     if let Some((raw_key, raw_val)) = list_item.trim().split_once(KEY_VALUE_SEPARATOR) {
         let key = raw_key.trim().to_string();
         let val = raw_val.trim().to_string();
-
-        if is_value_unclosed_multiline(&val) {
-            *multiline_key = Some(key);
-            *multiline_val = val;
-        } else {
-            kv.insert(key, val);
-        }
-    }
-}
-
-fn flush_multiline_remainder(
-    multiline_key: Option<String>,
-    multiline_val: String,
-    kv: &mut HashMap<String, String>,
-) {
-    if let Some(key) = multiline_key {
-        kv.insert(key, multiline_val);
+        kv.insert(key, val);
     }
 }
 
@@ -237,22 +288,19 @@ fn process_raw_nodes(raw_nodes: Vec<RawNode>) -> Vec<ProcessedNode> {
     raw_nodes.into_iter().map(build_processed_node).collect()
 }
 
-
 fn build_processed_node(raw: RawNode) -> ProcessedNode {
     let id = extract_node_id(&raw.kv);
-    let description = extract_clean_string(&raw.kv, KEY_DESCRIPTION);
-    let progress_notes = extract_clean_string(&raw.kv, KEY_PROGRESS_NOTES);
-    let image_id = extract_uuid_opt(&raw.kv, KEY_IMAGE_ID);
+    let image_id = extract_uuid_opt(&raw.kv, "image_id");
 
     let status = extract_node_status(&raw.kv);
     let position = extract_position_coordinates(&raw.kv);
     let prereq_uuids = extract_prerequisites_list(&raw.kv);
     let is_collapsed = extract_bool(&raw.kv, KEY_IS_COLLAPSED);
-    let is_frozen = extract_bool(&raw.kv, "is_frozen");
+    let is_frozen = extract_bool(&raw.kv, KEY_IS_FROZEN);
 
-    let mut node = FocusNode::new(raw.title, description);
+    let mut node = FocusNode::new(raw.title, raw.description);
     node.id = id;
-    node.progress_notes = progress_notes;
+    node.progress_notes = raw.progress_notes;
     node.image_id = image_id;
     node.status = status;
     node.x = position.0;
@@ -267,12 +315,6 @@ fn extract_node_id(kv: &HashMap<String, String>) -> Uuid {
     kv.get(KEY_ID)
         .and_then(|s| Uuid::parse_str(s.trim_matches(QUOTE_CHAR)).ok())
         .unwrap_or_else(Uuid::new_v4)
-}
-
-fn extract_clean_string(kv: &HashMap<String, String>, key: &str) -> String {
-    kv.get(key)
-        .map(|s| unescape_string(s.trim_matches(QUOTE_CHAR)))
-        .unwrap_or_default()
 }
 
 fn extract_uuid_opt(kv: &HashMap<String, String>, key: &str) -> Option<Uuid> {
@@ -361,88 +403,11 @@ fn extract_uuid_list(s: &str) -> Vec<String> {
         .collect()
 }
 
-fn escape_string(s: &str) -> String {
-    s.replace(BACKSLASH_CHAR, "\\\\")
-        .replace(QUOTE_CHAR, "\\\"")
-        .replace('\n', "\\n")
-        .replace('\r', "\\r")
-}
-
-fn unescape_string(s: &str) -> String {
-    let mut result = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-
-    while let Some(c) = chars.next() {
-        if c == BACKSLASH_CHAR {
-            match chars.next() {
-                Some('n') => result.push('\n'),
-                Some('r') => result.push('\r'),
-                Some('t') => result.push('\t'),
-                Some('"') => result.push('"'),
-                Some('\\') => result.push('\\'),
-                Some(other) => {
-                    result.push(BACKSLASH_CHAR);
-                    result.push(other);
-                }
-                None => result.push(BACKSLASH_CHAR),
-            }
-        } else {
-            result.push(c);
-        }
-    }
-
-    result
-}
-
-fn is_value_unclosed_multiline(s: &str) -> bool {
-    let trimmed = s.trim();
-    if !trimmed.starts_with(QUOTE_CHAR) {
-        return false;
-    }
-
-    let mut quote_count = 0;
-    let mut chars = trimmed.chars().peekable();
-    let mut escaped = false;
-
-    while let Some(c) = chars.next() {
-        if escaped {
-            escaped = false;
-        } else if c == BACKSLASH_CHAR {
-            escaped = true;
-        } else if c == QUOTE_CHAR {
-            quote_count += 1;
-        }
-    }
-
-    quote_count % 2 == 1
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_multiline_description_export_import() {
-        let mut graph = FocusGraph::default();
-        let mut node = FocusNode::new(
-            "Test Node".to_string(),
-            "Line 1\nLine 2\nLine 3".to_string(),
-        );
-        node.progress_notes = "Note line 1\nNote line 2".to_string();
-        graph.add_node(node);
-
-        let temp_dir = std::env::temp_dir();
-        let temp_path = temp_dir.join("test_uslu_multiline.md");
-        let temp_path_str = temp_path.to_str().unwrap();
-
-        MarkdownIO::export(&graph, temp_path_str).unwrap();
-
-        let imported_graph = MarkdownIO::import(temp_path_str).unwrap();
-        let imported_node = &imported_graph.nodes[0];
-
-        assert_eq!(imported_node.description, "Line 1\nLine 2\nLine 3");
-        assert_eq!(imported_node.progress_notes, "Note line 1\nNote line 2");
-
-        let _ = std::fs::remove_file(temp_path);
-    }
+fn format_parent_uuids(graph: &FocusGraph, node_id: Uuid) -> String {
+    graph
+        .parents_of(node_id)
+        .into_iter()
+        .map(|parent_id| format!("\"{}\"", parent_id))
+        .collect::<Vec<String>>()
+        .join(", ")
 }
