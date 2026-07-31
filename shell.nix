@@ -12,13 +12,12 @@ let
 
   crossPkgs = pkgs.pkgsCross.mingwW64;
   mingwCC = crossPkgs.stdenv.cc;
-  mingwLib = crossPkgs.windows.mingw_w64_pthreads;
+  mingwLib = crossPkgs.windows.pthreads;
 in
 pkgs.mkShell {
   nativeBuildInputs = with pkgs; [
     rustToolchain
     pkg-config
-    zenity
     tree
     mingwCC
     rustup

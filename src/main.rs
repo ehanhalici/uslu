@@ -5,13 +5,15 @@ use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use uslu::canvas::{CanvasData, CanvasMessage, Viewport};
+use uslu::file_selector::{FileSelectorMessage, FileSelectorState, FileSelectorView};
 use uslu::image::{ImageCropperState, ImageManager};
-use uslu::orgmode::OrgmodeIO;
 use uslu::models::{FocusGraph, FocusNode};
+use uslu::notebox::{NoteBoxMessage, OrgFormatter};
+use uslu::orgmode::OrgmodeIO;
 use uslu::sidebar::{self, NodeForm, SidebarMessage, TabType};
 use uslu::sugiyama::SugiyamaEngine;
+
 use uuid::Uuid;
-use uslu::notebox::{OrgFormatter, NoteBoxMessage};
 
 const APP_TITLE: &str = "Uslu — Focus Tree";
 const APP_WINDOW_WIDTH: f32 = 1280.0;
@@ -65,6 +67,8 @@ pub struct Uslu {
 
     is_dirty: bool,
     last_save_time: Instant,
+
+    pub file_selector_state: Option<FileSelectorState>,
 }
 
 impl Default for Uslu {
@@ -115,6 +119,7 @@ impl Default for Uslu {
             max_visible_level: max_lvl,
             is_dirty: false,
             last_save_time: Instant::now(),
+            file_selector_state: None,
         };
 
         app.reset_view_to_center();
@@ -126,6 +131,7 @@ impl Default for Uslu {
 pub enum Message {
     Canvas(CanvasMessage),
     Sidebar(SidebarMessage),
+    FileSelector(FileSelectorMessage),
     EventOccurred(Event),
     PeriodicSaveTick,
     ImagePicked(Option<(image::DynamicImage, Vec<u8>)>),
@@ -144,6 +150,7 @@ impl Uslu {
         match message {
             Message::Canvas(msg) => self.handle_canvas(msg),
             Message::Sidebar(msg) => return self.handle_sidebar(msg),
+            Message::FileSelector(msg) => return self.handle_file_selector(msg),
             Message::ImagePicked(data) => self.handle_image_picked(data),
             Message::PeriodicSaveTick => self.handle_periodic_autosave(),
             Message::EventOccurred(event) => self.handle_system_event(event),
@@ -152,6 +159,16 @@ impl Uslu {
     }
 
     fn view(&self) -> iced::Element<'_, Message> {
+        if let Some(ref selector_state) = self.file_selector_state {
+            let selector_view = FileSelectorView::render(selector_state).map(Message::FileSelector);
+            return iced::widget::container(selector_view)
+                .width(iced::Length::Fill)
+                .height(iced::Length::Fill)
+                .center_x(iced::Length::Fill)
+                .center_y(iced::Length::Fill)
+                .into();
+        }
+
         let canvas_data = CanvasData {
             graph: &self.graph,
             view: self.view,
@@ -186,10 +203,19 @@ impl Uslu {
 impl Uslu {
     fn handle_system_event(&mut self, event: Event) {
         match event {
-            Event::Keyboard(kb_event) => self.handle_keyboard_event(kb_event),
             Event::Window(window::Event::CloseRequested) => self.save_to_disk(),
+            Event::Keyboard(kb_event) => {
+                if self.file_selector_state.is_some() {
+                if let keyboard::Event::KeyPressed { ref key, .. } = kb_event {
+                    let _ = self.handle_file_selector(FileSelectorMessage::KeyPressed(key.clone()));
+                    return;
+                }
+            }
+                self.handle_keyboard_event(kb_event);
+            }
             _ => {}
         }
+        
     }
 
     fn handle_keyboard_event(&mut self, kb_event: keyboard::Event) {
@@ -236,6 +262,24 @@ impl Uslu {
         if let Some((img, bytes)) = data {
             self.cropper_state = Some(ImageCropperState::new(img, bytes));
         }
+    }
+
+    fn handle_file_selector(&mut self, msg: FileSelectorMessage) -> Task<Message> {
+        if matches!(msg, FileSelectorMessage::CancelSelection) {
+            self.file_selector_state = None;
+            return Task::none();
+        }
+
+        if let Some(ref mut selector_state) = self.file_selector_state {
+            if let Some(selected_path) = selector_state.update(msg) {
+                self.file_selector_state = None;
+                return Task::perform(
+                    ImageManager::load_selected_image_file(selected_path),
+                    Message::ImagePicked,
+                );
+            }
+        }
+        Task::none()
     }
 
     fn handle_canvas(&mut self, msg: CanvasMessage) {
@@ -343,10 +387,9 @@ impl Uslu {
                     self.auto_sync_selected();
                 }
             }
-
             SidebarMessage::OpenImagePicker => {
                 if self.is_editing_enabled || self.selected.is_none() {
-                    return Task::perform(ImageManager::pick_image_file(), Message::ImagePicked);
+                    self.file_selector_state = Some(FileSelectorState::new(None));
                 }
             }
             SidebarMessage::CropZoomChanged(z) => {

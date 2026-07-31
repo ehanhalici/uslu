@@ -21,7 +21,7 @@ tinyfiledialogs = "3.9"
 tokio = { version = "1.0", features = ["rt-multi-thread"] }
 base64 = "0.22"
 image = "0.25"
-rfd = "0.14"
+
 
 [profile.release]
 opt-level = 2

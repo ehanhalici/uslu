@@ -13,15 +13,9 @@ const DEFAULT_OFFSET_Y: f32 = 0.0;
 
 pub const CROPPER_CANVAS_SIZE: f32 = 240.0;
 pub const BASE_IMAGE_SIZE: f32 = 200.0;
+pub const MIN_ZOOM: f32 =  BASE_IMAGE_SIZE / (CROPPER_CANVAS_SIZE * 2.0);
 const TARGET_CROPPED_DIMENSION: u32 = 128;
 
-#[cfg(target_os = "linux")]
-const FILE_DIALOG_BINARY: &str = "zenity";
-#[cfg(target_os = "linux")]
-const FILE_DIALOG_TITLE_ARG: &str = "--title=Resim Seç";
-#[cfg(target_os = "linux")]
-const FILE_DIALOG_FILTER_ARG: &str =
-    "--file-filter=Resimler (png, jpg, jpeg, webp) | *.png *.jpg *.jpeg *.webp";
 
 const MARKDOWN_HEADER_TITLE: &str = "# Images Storage\n";
 const MARKDOWN_SECTION_PREFIX: &str = "## ";
@@ -40,8 +34,7 @@ pub struct ImageCropperState {
 impl ImageCropperState {
     pub fn new(img: DynamicImage, raw_bytes: Vec<u8>) -> Self {
         let image_handle = iced::widget::image::Handle::from_bytes(raw_bytes);
-        let min_zoom = CROPPER_CANVAS_SIZE / BASE_IMAGE_SIZE;
-        let initial_zoom = DEFAULT_ZOOM_LEVEL.max(min_zoom);
+        let initial_zoom = DEFAULT_ZOOM_LEVEL.max(MIN_ZOOM);
 
         let mut state = Self {
             original_image: img,
@@ -98,8 +91,10 @@ impl ImageCropperState {
 pub struct ImageManager;
 
 impl ImageManager {
-    pub async fn pick_image_file() -> Option<(DynamicImage, Vec<u8>)> {
-        tokio::task::spawn_blocking(execute_file_picker_dialog)
+    pub async fn load_selected_image_file(
+        file_path: std::path::PathBuf,
+    ) -> Option<(DynamicImage, Vec<u8>)> {
+        tokio::task::spawn_blocking(move || load_image_from_path(&file_path))
             .await
             .ok()?
     }
@@ -194,39 +189,9 @@ fn encode_rgba_image_to_base64(canvas: &RgbaImage) -> Result<String, String> {
     Ok(BASE64.encode(&png_bytes))
 }
 
-#[cfg(target_os = "linux")]
-fn execute_file_picker_dialog() -> Option<(DynamicImage, Vec<u8>)> {
-    let output = std::process::Command::new(FILE_DIALOG_BINARY)
-        .arg("--file-selection")
-        .arg(FILE_DIALOG_TITLE_ARG)
-        .arg(FILE_DIALOG_FILTER_ARG)
-        .output()
-        .ok()?;
 
-    if !output.status.success() {
-        return None;
-    }
-
-    let path_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if path_str.is_empty() {
-        return None;
-    }
-
-    load_image_from_path(&path_str)
-}
-
-#[cfg(any(target_os = "windows", target_os = "macos"))]
-fn execute_file_picker_dialog() -> Option<(DynamicImage, Vec<u8>)> {
-    let file_path = rfd::FileDialog::new()
-        .add_filter("Resimler", &["png", "jpg", "jpeg", "webp"])
-        .pick_file()?;
-
-    let path_str = file_path.to_str()?;
-    load_image_from_path(path_str)
-}
-
-fn load_image_from_path(path_str: &str) -> Option<(DynamicImage, Vec<u8>)> {
-    let bytes = std::fs::read(path_str).ok()?;
+pub fn load_image_from_path<P: AsRef<Path>>(path: P) -> Option<(DynamicImage, Vec<u8>)> {
+    let bytes = std::fs::read(path).ok()?;
     let img = image::load_from_memory(&bytes).ok()?;
     Some((img, bytes))
 }

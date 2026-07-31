@@ -5,7 +5,7 @@ use iced::widget::{
     button, column, container, row, scrollable, slider, text, text_editor, text_input,
 };
 use iced::{Color, Element, Font, Length, Point, Rectangle, Renderer, Size, Theme};
-use crate::image::{ImageCropperState, BASE_IMAGE_SIZE, CROPPER_CANVAS_SIZE};
+use crate::image::{ImageCropperState, BASE_IMAGE_SIZE, CROPPER_CANVAS_SIZE, MIN_ZOOM};
 use crate::models::{FocusNode, NodeStatus};
 use uuid::Uuid;
 use crate::notebox::{NoteBoxMessage, NoteBoxState, NoteBoxView};
@@ -764,7 +764,6 @@ impl<'a> canvas::Program<SidebarMessage> for CropperProgram<'a> {
                     mouse::ScrollDelta::Lines { y, .. } => y * 0.1,
                     mouse::ScrollDelta::Pixels { y, .. } => y * 0.002,
                 };
-                const MIN_ZOOM: f32 = CROPPER_CANVAS_SIZE / BASE_IMAGE_SIZE;
                 let new_zoom = (self.state.zoom + zoom_delta).clamp(MIN_ZOOM, 5.0);
                 (
                     iced::event::Status::Captured,
